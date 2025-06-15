@@ -6,123 +6,98 @@ import os
 import csv
 import numpy as np # For random data in placeholder
 
-# Attempt to import actual processors, fall back to placeholders if not found
-try:
-    from excel_processor import load_excel_data as actual_load_excel_data, \
-                                get_orange_rows_info as actual_get_orange_rows_info, \
-                                export_to_csv as actual_export_to_csv
-except ImportError:
-    actual_load_excel_data = None
-    actual_get_orange_rows_info = None
-    actual_export_to_csv = None
-
-try:
-    from rakuten_item_fetcher import fetch_item_data as actual_fetch_item_data
-except ImportError:
-    actual_fetch_item_data = None
-
-# --- Placeholder functions if actual modules are not available ---
-def placeholder_load_excel_data(filepath):
-    try:
-        df = pd.read_excel(filepath, engine='openpyxl')
-        # If 'SKU' column doesn't exist, try to create one from index for identification
-        if 'SKU' not in df.columns and not df.empty:
-            df['SKU_generated_id'] = df.index.astype(str)
-        return df
-    except FileNotFoundError:
-        messagebox.showerror("Error", f"Excel file not found: {filepath}")
-        return pd.DataFrame()
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to load Excel file '{filepath}': {e}")
-        return pd.DataFrame()
-
-def placeholder_get_orange_rows_info(filepath):
-    orange_indices = []
-    try:
-        from openpyxl import load_workbook
-        workbook = load_workbook(filepath)
-        sheet = workbook.active # Assuming the first sheet
-
-        # Common orange ARGB hex codes. Excel's "orange" can vary.
-        TARGET_ORANGE_RGB = "FFFF9900" 
-
-        for r_idx, row in enumerate(sheet.iter_rows(min_row=1)): # r_idx will be 0-based
-            is_orange_row = False
-            for cell in row:
-                if cell.fill and cell.fill.start_color and cell.fill.start_color.rgb:
-                    if cell.fill.start_color.rgb == TARGET_ORANGE_RGB:
-                        is_orange_row = True
-                        break 
-            if is_orange_row:
-                orange_indices.append(r_idx)
-    except Exception as e:
-        print(f"Error reading orange rows from '{filepath}': {e}. Assuming no orange rows.")
-    return orange_indices
-
-def placeholder_export_to_csv(excel_filepath, output_csv_filepath):
-    try:
-        df = pd.read_excel(excel_filepath, engine='openpyxl')
-        df.to_csv(output_csv_filepath, index=False, quoting=csv.QUOTE_ALL)
-        return True
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to export to CSV: {e}")
-        return False
-
-def placeholder_fetch_item_data(sku_list):
-    print(f"Placeholder: Fetching data for SKUs: {sku_list}")
-    updated_data = []
-    for sku in sku_list:
-        updated_data.append({
-            'SKU': sku, 
-            '商品名': f'Updated Name for {sku} ({np.random.choice(["A", "B"])})', 
-            '価格': float(np.random.randint(1000, 9000)),
-            '在庫': int(np.random.randint(0, 50)),
-            '備考': f'Recalculated {pd.Timestamp.now().strftime("%H:%M")}'
-        })
-    return pd.DataFrame(updated_data)
-
-# Use actual functions if available, otherwise use placeholders
-load_excel_data = actual_load_excel_data if actual_load_excel_data else placeholder_load_excel_data
-get_orange_rows_info = actual_get_orange_rows_info if actual_get_orange_rows_info else placeholder_get_orange_rows_info
-export_to_csv_file = actual_export_to_csv if actual_export_to_csv else placeholder_export_to_csv
-fetch_item_data = actual_fetch_item_data if actual_fetch_item_data else placeholder_fetch_item_data
-
-ARAKI_XLSX_PATH = 'araki.xlsx' 
-PREVIOUS_DATA_PATH = 'previous_data.json'
+class MultiColumnTreeview(ttk.Treeview):
+    def __init__(self, master, **kw):
+        super().__init__(master, **kw)
+        
+        # Create the header rows
+        self._header_rows = []
+        for i in range(3):
+            header = tk.Frame(self, bg='white')
+            header.pack(fill='x')
+            self._header_rows.append(header)
+            
+    def add_header_cell(self, row, text, width, x_position, bg_color='white'):
+        label = tk.Label(self._header_rows[row], text=text, width=width, 
+                        relief="solid", borderwidth=1, bg=bg_color)
+        label.place(x=x_position, y=0, width=width, height=25)
 
 class ExcelApp:
     def __init__(self, root_window):
         self.root = root_window
         self.root.title("Excel Data Viewer")
-        self.root.geometry("1000x700")
+        self.root.geometry("900x700")
 
         self.data_df = pd.DataFrame()
         self.previous_data_df = pd.DataFrame()
-        self.orange_row_indices = [] # Store 0-based indices of orange rows
-        self.sku_column_name = 'SKU' # Default SKU column name
+        self.orange_row_indices = [] 
+        self.sku_column_name = 'SKUコード'
+
+        # Define the 3-level header structure
+        self.header_structure = {
+            "人が入力": {
+                "自社在庫": [
+                    "検索除外",
+                    "在庫",
+                    "定価",
+                    "+人入金額",
+                    "平均単価",
+                    "FA売価(税抜)",
+                    "粗利"
+                ]
+            },
+            "PCが自動入力": {
+                "": [
+                    "RT後の利益",
+                    "FA売価(税込)"
+                ],
+                "e-life＆work shop": [
+                    "価格",
+                    "ポイント",
+                    "クーポン",
+                    "在庫",
+                    "URL"
+                ],
+                "工具ショップ": [
+                    "価格",
+                    "ポイント",
+                    "クーポン",
+                    "在庫",
+                    "URL"
+                ],
+                "晃栄産業　楽天市場店": [
+                    "価格",
+                    "ポイント",
+                    "クーポン",
+                    "在庫",
+                    "URL"
+                ],
+                "Dear worker ディアワーカー": [
+                    "価格",
+                    "ポイント",
+                    "クーポン",
+                    "在庫",
+                    "URL"
+                ]
+            }
+        }
+
+        # Define shop colors
+        self.shop_colors = {
+            "e-life＆work shop": "#87CEEB",  # Light blue
+            "工具ショップ": "#90EE90",       # Light green
+            "晃栄産業　楽天市場店": "#FFB6C1",  # Light pink
+            "Dear worker ディアワーカー": "#DDA0DD"  # Light purple
+        }
 
         self._setup_menu()
         self._setup_toolbar()
         self._setup_sku_input()
         self._setup_table()
 
-        self.load_persistent_data()
-        self.load_initial_data() # This will also determine self.sku_column_name
-
-    def _determine_sku_column(self, df):
-        if 'SKU' in df.columns:
-            return 'SKU'
-        elif 'SKU_generated_id' in df.columns:
-            return 'SKU_generated_id'
-        elif not df.empty:
-            return df.columns[0]
-        return None
-
     def _setup_menu(self):
         menubar = tk.Menu(self.root)
         filemenu = tk.Menu(menubar, tearoff=0)
-        filemenu.add_command(label="Export araki.xlsx to CSV", command=self.export_araki_to_csv)
-        filemenu.add_separator()
         filemenu.add_command(label="Exit", command=self.on_closing)
         menubar.add_cascade(label="File", menu=filemenu)
         helpmenu = tk.Menu(menubar, tearoff=0)
@@ -136,8 +111,6 @@ class ExcelApp:
         recalc_button.pack(side=tk.LEFT, padx=2, pady=2)
         recalc_selected_button = ttk.Button(toolbar, text="Selected Recalculate", command=self.recalculate_selected)
         recalc_selected_button.pack(side=tk.LEFT, padx=2, pady=2)
-        export_button = ttk.Button(toolbar, text="CSV Export (araki.xlsx)", command=self.export_araki_to_csv)
-        export_button.pack(side=tk.LEFT, padx=2, pady=2)
         toolbar.pack(side=tk.TOP, fill=tk.X)
 
     def _setup_sku_input(self):
@@ -148,205 +121,116 @@ class ExcelApp:
         sku_frame.pack(side=tk.TOP, fill=tk.X)
 
     def _setup_table(self):
-        frame = tk.Frame(self.root)
-        frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.tree = ttk.Treeview(frame, show='headings')
-        vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        vsb.pack(side='right', fill='y')
-        hsb = ttk.Scrollbar(frame, orient="horizontal", command=self.tree.xview)
-        hsb.pack(side='bottom', fill='x')
-        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        self.tree.pack(fill=tk.BOTH, expand=True)
+        # Create main frame
+        main_frame = tk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
+        # Create header frames
+        self.header_frames = []
+        for i in range(3):
+            frame = tk.Frame(main_frame, height=25)
+            frame.pack(fill=tk.X, pady=(0, 1))
+            frame.pack_propagate(False)  # Prevent frame from shrinking
+            self.header_frames.append(frame)
+
+        # Create table frame
+        table_frame = tk.Frame(main_frame)
+        table_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Create treeview
+        self.tree = ttk.Treeview(table_frame, show='headings')
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
+        
+        # Configure scrollbars
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        
+        # Grid layout
+        self.tree.grid(row=0, column=0, sticky='nsew')
+        vsb.grid(row=0, column=1, sticky='ns')
+        hsb.grid(row=1, column=0, sticky='ew')
+        
+        # Configure grid weights
+        table_frame.grid_rowconfigure(0, weight=1)
+        table_frame.grid_columnconfigure(0, weight=1)
+
+        # Configure styles
         self.tree.tag_configure('changed', background='yellow')
         self.tree.tag_configure('new_item', background='lightgreen')
         self.tree.tag_configure('orange_excel', background='orange')
+        self.tree.tag_configure('sold_out', background='red')
 
-    def load_initial_data(self):
-        self.data_df = load_excel_data(ARAKI_XLSX_PATH)
-        self.sku_column_name = self._determine_sku_column(self.data_df)
+        # Set up headers
+        self._setup_headers()
 
-        if not self.data_df.empty:
-            self.orange_row_indices = get_orange_rows_info(ARAKI_XLSX_PATH)
-        else:
-            if os.path.exists(ARAKI_XLSX_PATH):
-                messagebox.showwarning("Data Load", f"Could not load data from {ARAKI_XLSX_PATH}. It might be empty or corrupted.")
+    def _setup_headers(self):
+        # Column configurations
+        column_widths = {
+            "検索除外": 80,
+            "在庫": 60,
+            "定価": 80,
+            "+人入金額": 80,
+            "平均単価": 100,
+            "FA売価(税抜)": 100,
+            "粗利": 60,
+            "RT後の利益": 80,
+            "FA売価(税込)": 100,
+            "価格": 80,
+            "ポイント": 60,
+            "クーポン": 60,
+            "URL": 150
+        }
 
-        self.update_table_display(highlight_new=True)
-        if self.previous_data_df.empty and not self.data_df.empty:
-            self.previous_data_df = self.data_df.copy()
-            self.save_persistent_data()
+        # Get all columns
+        all_columns = []
+        for category in self.header_structure.values():
+            for columns in category.values():
+                all_columns.extend(columns)
 
-    def load_persistent_data(self):
-        if os.path.exists(PREVIOUS_DATA_PATH):
-            try:
-                self.previous_data_df = pd.read_json(PREVIOUS_DATA_PATH, orient='split')
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to load persistent data from {PREVIOUS_DATA_PATH}: {e}")
-                self.previous_data_df = pd.DataFrame()
-        else:
-            self.previous_data_df = pd.DataFrame()
-
-    def save_persistent_data(self):
-        try:
-            if isinstance(self.data_df, pd.DataFrame) and not self.data_df.empty:
-                self.data_df.to_json(PREVIOUS_DATA_PATH, orient='split', indent=4)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save persistent data to {PREVIOUS_DATA_PATH}: {e}")
-
-    def update_table_display(self, highlight_new=False, skus_just_changed=None):
-        for i in self.tree.get_children():
-            self.tree.delete(i)
+        # Configure treeview columns
+        self.tree["columns"] = all_columns
         
-        if self.data_df.empty:
-            self.tree["columns"] = []
-            self.tree["displaycolumns"] = []
-            return
-
-        self.tree["columns"] = list(self.data_df.columns)
-        self.tree["displaycolumns"] = list(self.data_df.columns)
-        
-        for col in self.data_df.columns:
-            self.tree.heading(col, text=col, command=lambda _col=col: self.sort_column(_col, False))
-            self.tree.column(col, anchor=tk.W, width=120)
-
-        for df_idx, row_data in self.data_df.iterrows():
-            values = list(row_data)
-            item_iid = str(df_idx)
-            
-            tags_to_apply = []
-
-            if df_idx in self.orange_row_indices:
-                tags_to_apply.append('orange_excel')
-
-            current_sku = row_data[self.sku_column_name] if self.sku_column_name and self.sku_column_name in row_data else None
-
-            if highlight_new and current_sku and not self.previous_data_df.empty and self.sku_column_name in self.previous_data_df.columns:
-                if current_sku not in self.previous_data_df[self.sku_column_name].values:
-                    tags_to_apply.append('new_item')
-            
-            if skus_just_changed and current_sku in skus_just_changed:
-                if not self.previous_data_df.empty and self.sku_column_name in self.previous_data_df.columns:
-                    prev_row_series = self.previous_data_df[self.previous_data_df[self.sku_column_name] == current_sku]
-                    if not prev_row_series.empty:
-                        prev_row = prev_row_series.iloc[0]
-                        if not row_data.equals(prev_row.reindex(row_data.index).fillna(pd.NA)):
-                            tags_to_apply.append('changed')
-            
-            self.tree.insert("", tk.END, values=values, iid=item_iid, tags=tuple(tags_to_apply))
-
-    def sort_column(self, col, reverse):
-        try:
-            data_list = [(self.tree.set(k, col), k) for k in self.tree.get_children('')]
-            try:
-                data_list.sort(key=lambda t: float(t[0]), reverse=reverse)
-            except ValueError:
-                data_list.sort(key=lambda t: str(t[0]).lower(), reverse=reverse)
-
-            for index, (val, k) in enumerate(data_list):
-                self.tree.move(k, '', index)
-            
-            self.tree.heading(col, command=lambda _col=col: self.sort_column(_col, not reverse))
-        except Exception as e:
-            print(f"Error sorting column {col}: {e}")
-
-    def _internal_recalculate(self, skus_to_process):
-        if not skus_to_process:
-            messagebox.showinfo("Info", "No SKUs provided for recalculation.")
-            return
-
-        if not self.sku_column_name or self.sku_column_name not in self.data_df.columns:
-            messagebox.showerror("Error", "SKU column not configured or found in data.")
-            return
-
-        self.previous_data_df = self.data_df.copy()
-        fetched_df = fetch_item_data(skus_to_process)
-
-        if fetched_df.empty or self.sku_column_name not in fetched_df.columns:
-            messagebox.showwarning("Recalculate", "No data returned from fetch operation or SKU column missing in fetched data.")
-            return
-
-        original_index_name = self.data_df.index.name
-        self.data_df = self.data_df.set_index(self.sku_column_name, drop=False)
-        
-        for _, fetched_row in fetched_df.iterrows():
-            sku = fetched_row[self.sku_column_name]
-            if sku in self.data_df.index:
-                for col in fetched_df.columns:
-                    if col in self.data_df.columns:
-                        self.data_df.loc[sku, col] = fetched_row[col]
-
-        self.data_df = self.data_df.reset_index(drop=True)
-        if original_index_name:
-             self.data_df.index.name = original_index_name
-
-        self.update_table_display(skus_just_changed=skus_to_process)
-        self.save_persistent_data()
-        messagebox.showinfo("Recalculate", f"Recalculation complete for: {', '.join(skus_to_process)}.")
+        # Set up column headers and widths
+        current_x = 0
+        for main_cat, subcats in self.header_structure.items():
+            for subcat, columns in subcats.items():
+                # Calculate total width for this section
+                section_width = sum(column_widths.get(col, 80) for col in columns)
+                
+                # Create main category label
+                main_label = tk.Label(self.header_frames[0], text=main_cat, 
+                                    relief="solid", borderwidth=1)
+                main_label.place(x=current_x, y=0, width=section_width, height=25)
+                
+                # Create subcategory label
+                if subcat:
+                    bg_color = self.shop_colors.get(subcat, 'white')
+                    sub_label = tk.Label(self.header_frames[1], text=subcat,
+                                       relief="solid", borderwidth=1, bg=bg_color)
+                    sub_label.place(x=current_x, y=0, width=section_width, height=25)
+                
+                # Set up individual columns
+                for col in columns:
+                    width = column_widths.get(col, 80)
+                    # Create column header label
+                    col_label = tk.Label(self.header_frames[2], text=col,
+                                       relief="solid", borderwidth=1)
+                    col_label.place(x=current_x, y=0, width=width, height=25)
+                    
+                    # Configure treeview column
+                    self.tree.column(col, width=width, anchor='center')
+                    current_x += width
 
     def recalculate_all(self):
-        if self.data_df.empty or not self.sku_column_name:
-            messagebox.showinfo("Info", "No data or SKU column to recalculate.")
-            return
-        all_skus = self.data_df[self.sku_column_name].unique().tolist()
-        self._internal_recalculate(all_skus)
+        messagebox.showinfo("Info", "Recalculate All functionality will be implemented later.")
 
     def recalculate_selected(self):
-        selected_iids = self.tree.selection()
-        skus_to_recalculate = []
-
-        if not self.sku_column_name:
-            messagebox.showerror("Error", "SKU column not identified.")
-            return
-
-        if selected_iids:
-            try:
-                selected_df_indices = [int(iid) for iid in selected_iids]
-                valid_indices = [idx for idx in selected_df_indices if idx in self.data_df.index]
-                if valid_indices:
-                    skus_to_recalculate = self.data_df.loc[valid_indices, self.sku_column_name].unique().tolist()
-            except ValueError:
-                messagebox.showerror("Error", "Selection contains non-integer DataFrame indices.")
-                return
-        
-        if not skus_to_recalculate:
-            input_sku = self.sku_entry.get().strip()
-            if input_sku:
-                if self.sku_column_name in self.data_df.columns and \
-                   input_sku in self.data_df[self.sku_column_name].values:
-                    skus_to_recalculate = [input_sku]
-                else:
-                    messagebox.showinfo("Info", f"SKU '{input_sku}' not found in table.")
-                    return
-            else:
-                messagebox.showinfo("Info", "No items selected in table and no SKU entered in input field.")
-                return
-        
-        if not skus_to_recalculate:
-            messagebox.showinfo("Info", "No SKUs identified for recalculation.")
-            return
-
-        self._internal_recalculate(skus_to_recalculate)
-
-    def export_araki_to_csv(self):
-        if not os.path.exists(ARAKI_XLSX_PATH):
-            messagebox.showerror("Error", f"{ARAKI_XLSX_PATH} not found. Cannot export.")
-            return
-            
-        save_path = filedialog.asksaveasfilename(defaultextension=".csv",
-                                                 filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-                                                 title="Save araki.xlsx content as CSV")
-        if not save_path:
-            return
-        
-        if export_to_csv_file(ARAKI_XLSX_PATH, save_path):
-            messagebox.showinfo("Export Successful", f"Data from {ARAKI_XLSX_PATH} exported to {save_path}")
+        messagebox.showinfo("Info", "Selected Recalculate functionality will be implemented later.")
 
     def show_about(self):
         messagebox.showinfo("About", "Excel Data Viewer\nVersion 1.0\n\nHandles display and processing of Excel data related to Rakuten items.")
 
     def on_closing(self):
-        self.save_persistent_data()
         self.root.destroy()
 
 if __name__ == '__main__':
