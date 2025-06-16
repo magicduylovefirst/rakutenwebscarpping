@@ -10,6 +10,9 @@ import urllib.parse
 import json
 import time
 from datetime import datetime
+import threading
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def read_skus_from_excel(excel_path):
     """Read SKUs from first column of Excel file"""
@@ -79,9 +82,15 @@ def get_variant_info(driver, base_url):
                 time.sleep(1)  # Wait for page to load
 
                 try:
-                    # Get price
-                    price_element = driver.find_element(By.CSS_SELECTOR, "span.price--OX_YW")
-                    variants[-1]['価格'] = int(price_element.text.replace('円', '').replace(',', ''))
+                    # Get price - try both new and old selectors
+                    price_element = None
+                    try:
+                        price_element = driver.find_element(By.CSS_SELECTOR, "div.value--1oSD_.layout-inline--2z490.size-x-large--DyMl5.style-bold500--1X0Xl.color-crimson--2uc0e.align-right--3POGa")
+                    except:
+                        price_element = driver.find_element(By.CSS_SELECTOR, "span.price--OX_YW")
+                    
+                    if price_element:
+                        variants[-1]['価格'] = int(price_element.text.replace('円', '').replace(',', ''))
                 except:
                     pass
 
@@ -124,7 +133,81 @@ def get_variant_info(driver, base_url):
     
     return variants
 
-def scrape_product_info(driver, url, is_waste_shop=False):
+def get_kougushop_variant_info(driver, base_url):
+    """Get variants information for kougushop"""
+    variants = []
+    try:
+        # For kougushop, variants are numbered from 8021 to 8034 for sizes 22.5 to 30
+        sizes = ['22.5', '23', '23.5', '24', '24.5', '25', '25.5', '26', '26.5', '27', '27.5', '28', '29', '30']
+        for idx, size in enumerate(sizes, 8021):
+            variant_url = f"{base_url}&variantId={idx}"
+            variants.append({
+                'size': size,
+                'variant_id': str(idx),
+                'url': variant_url,
+                '価格': None,
+                'ポイント': None,
+                'クーポン': None,
+                '在庫状況': None
+            })
+
+            # Visit variant URL and get its information
+            driver.get(variant_url)
+            time.sleep(1)  # Wait for page to load
+
+            try:
+                # Get price - try both new and old selectors
+                price_element = None
+                try:
+                    price_element = driver.find_element(By.CSS_SELECTOR, "div.value--1oSD_.layout-inline--2z490.size-x-large--DyMl5.style-bold500--1X0Xl.color-crimson--2uc0e.align-right--3POGa")
+                except:
+                    price_element = driver.find_element(By.CSS_SELECTOR, "span.price--OX_YW")
+                
+                if price_element:
+                    variants[-1]['価格'] = int(price_element.text.replace('円', '').replace(',', ''))
+            except:
+                pass
+
+            try:
+                # Get points
+                points_element = driver.find_element(By.CSS_SELECTOR, "div.point-summary__total___3rYYD span")
+                if not points_element:
+                    points_element = driver.find_element(By.CSS_SELECTOR, "span.price--point-badge_item")
+                
+                if points_element:
+                    points_text = points_element.text.replace('ポイント', '').replace(',', '')
+                    variants[-1]['ポイント'] = int(points_text) if points_text.isdigit() else None
+            except:
+                pass
+
+            try:
+                # Get coupon
+                coupon_element = driver.find_element(By.CSS_SELECTOR, "div.coupon")
+                coupon_text = coupon_element.text
+                if coupon_text:
+                    coupon_value = int(''.join(filter(str.isdigit, coupon_text)))
+                    variants[-1]['クーポン'] = coupon_value
+            except:
+                pass
+
+            try:
+                # Check inventory status
+                out_of_stock = driver.find_elements(By.XPATH, "//*[contains(text(), '売り切れ')]")
+                if out_of_stock:
+                    variants[-1]['在庫状況'] = '在庫なし'
+                else:
+                    in_stock = driver.find_elements(By.XPATH, "//*[contains(text(), '在庫あり')]")
+                    if in_stock:
+                        variants[-1]['在庫状況'] = '在庫あり'
+            except:
+                pass
+
+    except Exception as e:
+        print(f"Error getting kougushop variants: {e}")
+    
+    return variants
+
+def scrape_product_info(driver, url, is_waste_shop=False, is_kougushop=False, is_kouei_shop=False, is_dear_worker=False):
     """Scrape product information from a given URL"""
     try:
         driver.get(url)
@@ -133,19 +216,71 @@ def scrape_product_info(driver, url, is_waste_shop=False):
         # Initialize product info dictionary
         product_info = {
             'url': url,
-            'variants': [] if is_waste_shop else None
+            'variants': [] if (is_waste_shop or is_kougushop or is_kouei_shop or is_dear_worker) else None
         }
 
-        # Get variants for waste shop
-        if is_waste_shop:
+        # Get variants based on shop type
+        if is_waste_shop or is_kougushop or is_kouei_shop or is_dear_worker:
             base_url = url.split('&variantId=')[0] if '&variantId=' in url else url
-            product_info['variants'] = get_variant_info(driver, base_url)
+            if is_waste_shop or is_kouei_shop or is_dear_worker:
+                product_info['variants'] = get_variant_info(driver, base_url)
+            elif is_kougushop:
+                product_info['variants'] = get_kougushop_variant_info(driver, base_url)
 
         return product_info
 
     except Exception as e:
         print(f"Error scraping URL {url}: {e}")
         return None
+
+def scrape_shop(shop_code, shop_info, sku, result_queue):
+    """Scrape a single shop in a separate thread"""
+    driver = None
+    try:
+        driver = setup_webdriver()
+        
+        # Generate shop-specific URL
+        if shop_code == 'waste':
+            url = f"{shop_info['base_url']}cp209/?rafcid=wsc_i_is_1085274442429696242"
+        elif shop_code == 'kougushop':
+            url = f"{shop_info['base_url']}{sku.split('-')[1]}-{sku.split('-')[2]}/?rafcid=wsc_i_is_1085274442429696242"
+        elif shop_code == 'kouei-sangyou':
+            url = f"{shop_info['base_url']}fcp209/?rafcid=wsc_i_is_1085274442429696242"
+        else:  # dear-worker
+            url = f"{shop_info['base_url']}cp209boa/?rafcid=wsc_i_is_1085274442429696242"
+
+        shop_result = {
+            'shop_name': shop_info['name'],
+            'shop_code': shop_code,
+            'URL': url
+        }
+
+        print(f"  Scraping {shop_info['name']} ({url})")
+        
+        # Check shop type
+        is_waste_shop = shop_code == 'waste'
+        is_kougushop = shop_code == 'kougushop'
+        is_kouei_shop = shop_code == 'kouei-sangyou'
+        is_dear_worker = shop_code == 'dear-worker'
+        
+        # Scrape product info
+        product_info = scrape_product_info(driver, url, is_waste_shop, is_kougushop, is_kouei_shop, is_dear_worker)
+        
+        if product_info:
+            if (is_waste_shop or is_kouei_shop or is_dear_worker) and product_info['variants']:
+                shop_result['variants'] = product_info['variants']
+            elif is_kougushop and product_info['variants']:
+                shop_result['variants'] = product_info['variants']
+
+        # Put result in queue
+        result_queue.put((shop_code, shop_result))
+
+    except Exception as e:
+        print(f"Error scraping {shop_code}: {e}")
+        result_queue.put((shop_code, None))
+    finally:
+        if driver:
+            driver.quit()
 
 def main():
     start_time = time.time()
@@ -169,8 +304,25 @@ def main():
         }
     }
 
-    # Setup WebDriver
-    driver = setup_webdriver()
+    # Shop information dictionary
+    shops = {
+        'waste': {
+            'name': 'e-life＆work shop',
+            'base_url': 'https://item.rakuten.co.jp/waste/'
+        },
+        'kougushop': {
+            'name': '工具ショップ',
+            'base_url': 'https://item.rakuten.co.jp/kougushop/'
+        },
+        'kouei-sangyou': {
+            'name': '晃栄産業',
+            'base_url': 'https://item.rakuten.co.jp/kouei-sangyou/'
+        },
+        'dear-worker': {
+            'name': 'dear-worker',
+            'base_url': 'https://item.rakuten.co.jp/dear-worker/'
+        }
+    }
 
     try:
         # Process each SKU
@@ -199,54 +351,28 @@ def main():
                 'shop_info': {}
             }
             
-            # Add shop information
-            for shop_code, shop_info in {
-                'waste': {
-                    'name': 'e-life＆work shop',
-                    'base_url': 'https://item.rakuten.co.jp/waste/'
-                },
-                'kougushop': {
-                    'name': '工具ショップ',
-                    'base_url': 'https://item.rakuten.co.jp/kougushop/'
-                },
-                'kouei-sangyou': {
-                    'name': '晃栄産業',
-                    'base_url': 'https://item.rakuten.co.jp/kouei-sangyou/'
-                },
-                'dear-worker': {
-                    'name': 'dear-worker',
-                    'base_url': 'https://item.rakuten.co.jp/dear-worker/'
-                }
-            }.items():
-                # Generate shop-specific URL
-                if shop_code == 'waste':
-                    url = f"{shop_info['base_url']}cp209/?rafcid=wsc_i_is_1085274442429696242"
-                elif shop_code == 'kougushop':
-                    url = f"{shop_info['base_url']}{sku.split('-')[1]}-{sku.split('-')[2]}/?rafcid=wsc_i_is_1085274442429696242"
-                elif shop_code == 'kouei-sangyou':
-                    url = f"{shop_info['base_url']}fcp209/?rafcid=wsc_i_is_1085274442429696242"
-                else:  # dear-worker
-                    url = f"{shop_info['base_url']}cp209boa/?rafcid=wsc_i_is_1085274442429696242"
+            # Create a queue for thread results
+            result_queue = Queue()
+            threads = []
+            
+            # Start a thread for each shop
+            for shop_code, shop_info in shops.items():
+                thread = threading.Thread(
+                    target=scrape_shop,
+                    args=(shop_code, shop_info, sku, result_queue)
+                )
+                threads.append(thread)
+                thread.start()
 
-                item['shop_info'][shop_code] = {
-                    'shop_name': shop_info['name'],
-                    'shop_code': shop_code,
-                    'URL': url
-                }
+            # Wait for all threads to complete
+            for thread in threads:
+                thread.join()
 
-                print(f"  Scraping {shop_info['name']} ({url})")
-                
-                # Check if this is the waste shop
-                is_waste_shop = shop_code == 'waste'
-                
-                # Scrape product info
-                product_info = scrape_product_info(driver, url, is_waste_shop)
-                
-                if product_info and is_waste_shop and product_info['variants']:
-                    item['shop_info'][shop_code]['variants'] = product_info['variants']
-
-                # Small delay between shops
-                time.sleep(1)
+            # Collect results from queue
+            while not result_queue.empty():
+                shop_code, shop_result = result_queue.get()
+                if shop_result:
+                    item['shop_info'][shop_code] = shop_result
 
             # Add item to results
             results['items'].append(item)
@@ -287,8 +413,8 @@ def main():
         print(f"Total time: {time.time() - start_time:.2f} seconds")
         print(f"Average time per SKU: {(time.time() - start_time)/len(skus):.2f} seconds")
 
-    finally:
-        driver.quit()
+    except Exception as e:
+        print(f"Error in main process: {e}")
 
 if __name__ == "__main__":
     main() 
