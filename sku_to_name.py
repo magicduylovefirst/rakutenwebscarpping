@@ -113,7 +113,22 @@ def format_sku_for_shop(sku: str, shop_info: dict) -> str:
 
 def fetch_item_details(code: str) -> dict:
     """Fetch detailed item information from multiple shops"""
-    all_items = []
+    shop_count = 0
+    combined_info = {
+        'original_sku': code,
+        'product_info': {
+            '商品管理番号': code,
+            '商品名': 'N/A',
+            '検索条件': code,
+            '検索除外': '-',
+            '定価': '-',
+            '仕入金額': '-',
+            '平均単価': '-',
+            '粗利': '-',
+            'RT後の利益': '-'
+        },
+        'shop_info': []
+    }
     
     for shop_code, shop_info in SHOPS.items():
         search_code = format_sku_for_shop(code, shop_info)
@@ -134,49 +149,60 @@ def fetch_item_details(code: str) -> dict:
             data = response.json()
             
             if data.get('Items'):
-                for item_data in data['Items']:
-                    item = item_data['Item']
-                    
-                    # Calculate values
-                    price = item.get('itemPrice', 0)
-                    points = item.get('points', 0)
-                    tax_rate = 1.1  # 10% tax rate
-                    
-                    details = {
-                        'original_sku': code,
-                        'shop_name': shop_info['name'],
-                        'shop_code': shop_code,
-                        'search_code_used': search_code,
-                        'product_info': {
-                            '商品管理番号': item.get('itemCode', 'N/A').replace(f"{shop_code}:", ''),
-                            '商品名': item.get('itemName', 'N/A'),
-                            '検索条件': code,
-                            '検索除外': '-',
-                            '在庫': '○' if item.get('availability', 0) == 1 else '×',
-                            '定価': '-',
-                            '仕入金額': '-',
-                            '平均単価': '-',
-                            'FA売価(税抜)': int(price / tax_rate) if price else 0,
-                            '粗利': '-',
-                            'RT後の利益': '-',
-                            'FA売価(税込)': price
-                        },
-                        'shop_info': {
-                            '価格': price,
-                            'ポイント': points,
-                            'クーポン': item.get('couponPrice', 0),
-                            '在庫状況': '在庫あり' if item.get('availability', 0) == 1 else '在庫なし',
-                            'URL': item.get('itemUrl', '')
-                        }
-                    }
-                    all_items.append(details)
+                shop_count += 1
+                item = data['Items'][0]['Item']  # Get first item
+                
+                # Calculate values
+                price = item.get('itemPrice', 0)
+                points = item.get('points', 0)
+                tax_rate = 1.1  # 10% tax rate
+                
+                # Update product name if not set
+                if combined_info['product_info']['商品名'] == 'N/A':
+                    combined_info['product_info']['商品名'] = item.get('itemName', 'N/A')
+                
+                # Add shop-specific info
+                shop_details = {
+                    'shop_name': shop_info['name'],
+                    'shop_code': shop_code,
+                    'search_code_used': search_code,
+                    '商品管理番号': item.get('itemCode', 'N/A').replace(f"{shop_code}:", ''),
+                    '在庫': '○' if item.get('availability', 0) == 1 else '×',
+                    'FA売価(税抜)': int(price / tax_rate) if price else 0,
+                    'FA売価(税込)': price,
+                    '価格': price,
+                    'ポイント': points,
+                    'クーポン': item.get('couponPrice', 0),
+                    '在庫状況': '在庫あり' if item.get('availability', 0) == 1 else '在庫なし',
+                    'URL': item.get('itemUrl', '')
+                }
+                
+                # Add as shop1, shop2, etc.
+                combined_info['product_info'][f'shop{shop_count}'] = shop_details
             else:
                 print(f"No items found in {shop_info['name']} for code: {search_code}")
                     
         except Exception as e:
             print(f"Error fetching data for {code} from {shop_info['name']}: {e}")
     
-    return {'items': all_items}
+    # Fill empty shops if needed
+    for i in range(shop_count + 1, 5):
+        combined_info['product_info'][f'shop{i}'] = {
+            'shop_name': 'N/A',
+            'shop_code': 'N/A',
+            'search_code_used': 'N/A',
+            '商品管理番号': 'N/A',
+            '在庫': '×',
+            'FA売価(税抜)': 0,
+            'FA売価(税込)': 0,
+            '価格': 0,
+            'ポイント': 0,
+            'クーポン': 0,
+            '在庫状況': '在庫なし',
+            'URL': ''
+        }
+    
+    return combined_info
 
 def read_skus_from_excel(excel_path):
     """Read SKUs from first column of Excel file"""
@@ -244,33 +270,15 @@ def main():
         print(f"  Description: {shop_info['description']}\n")
     
     # Process all SKUs
-    all_results = {
-        'items': [],
-        'shops_searched': {
-            shop_code: {
-                'name': info['name'],
-                'base_url': info['base_url'],
-                'description': info['description']
-            } for shop_code, info in SHOPS.items()
-        }
-    }
+    all_results = []
     processed_count = 0
-    items_per_shop = {shop_code: 0 for shop_code in SHOPS.keys()}
     
     for sku in skus:
         start_item_time = time.time()
         print(f"\nFetching data for SKU: {sku}")
         result = fetch_item_details(sku)
-        
-        # Count items per shop
-        for item in result['items']:
-            shop_name = item['shop_name']
-            shop_code = next((code for code, info in SHOPS.items() if info['name'] == shop_name), None)
-            if shop_code:
-                items_per_shop[shop_code] += 1
-        
-        all_results['items'].extend(result['items'])
-        processed_count += len(result['items'])
+        all_results.append(result)
+        processed_count += 1
         
         # Calculate and show progress
         elapsed_item_time = time.time() - start_item_time
@@ -280,27 +288,33 @@ def main():
     # Calculate total time
     total_time = time.time() - start_time
     
-    # Add timing info to results
-    all_results['metadata'] = {
-        'total_time_seconds': round(total_time, 2),
-        'average_time_per_sku': round(total_time / len(skus), 2) if skus else 0,
-        'total_skus_processed': len(skus),
-        'total_items_found': processed_count,
-        'items_per_shop': items_per_shop,
-        'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # Add metadata
+    final_results = {
+        'results': all_results,
+        'metadata': {
+            'total_time_seconds': round(total_time, 2),
+            'average_time_per_sku': round(total_time / len(skus), 2) if skus else 0,
+            'total_skus_processed': len(skus),
+            'total_items_found': processed_count,
+            'shops_searched': {
+                shop_code: {
+                    'name': info['name'],
+                    'base_url': info['base_url'],
+                    'description': info['description']
+                } for shop_code, info in SHOPS.items()
+            },
+            'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
     }
     
     # Save results to JSON file
     with open('results.json', 'w', encoding='utf-8') as f:
-        json.dump(all_results, ensure_ascii=False, indent=2, fp=f)
+        json.dump(final_results, ensure_ascii=False, indent=2, fp=f)
     
     print(f"\nProcessing completed:")
     print(f"Total time: {total_time:.2f} seconds")
     print(f"Average time per SKU: {total_time / len(skus):.2f} seconds")
     print(f"Total SKUs processed: {len(skus)}")
-    print(f"Items found per shop:")
-    for shop_code, count in items_per_shop.items():
-        print(f"- {SHOPS[shop_code]['name']}: {count} items")
     print(f"Results saved to results.json")
 
 if __name__ == "__main__":
