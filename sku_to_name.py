@@ -9,7 +9,24 @@ from datetime import datetime
 # Constants
 API_ENDPOINT = 'https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601'
 APP_ID = "1085274442429696242"  # Rakuten Application ID
-SHOP_CODE = 'waste'  # e-life＆work shop
+
+# Define shop configurations
+SHOPS = {
+    'waste': {  # e-life＆work shop
+        'name': 'e-life＆work shop',
+        'shop_code': 'waste',
+        'base_url': 'https://item.rakuten.co.jp/waste/',
+        'description': 'Main shop for safety equipment and work gear',
+        'sku_format': lambda sku: sku.split('-')[1]  # Extract model number (e.g., 1271a029)
+    },
+    'kougushop': {  # 工具ショップ
+        'name': '工具ショップ',
+        'shop_code': 'kougushop',
+        'base_url': 'https://item.rakuten.co.jp/kougushop/',
+        'description': 'Specialized in tools and safety equipment',
+        'sku_format': lambda sku: f"{sku.split('-')[1]}-{sku.split('-')[2]}"  # Format: 1271a029-025
+    }
+}
 
 def truncate_str(s: str, length: int) -> str:
     """Truncate string to specified length, adding ... if truncated"""
@@ -72,6 +89,81 @@ def extract_specs(caption):
     
     return specs
 
+def format_sku_for_shop(sku: str, shop_info: dict) -> str:
+    """Format SKU based on shop's pattern"""
+    try:
+        return shop_info['sku_format'](sku)
+    except Exception as e:
+        print(f"Error formatting SKU {sku} for {shop_info['name']}: {e}")
+        return sku
+
+def fetch_item_details(code: str) -> dict:
+    """Fetch detailed item information from multiple shops"""
+    all_items = []
+    
+    for shop_code, shop_info in SHOPS.items():
+        search_code = format_sku_for_shop(code, shop_info)
+        
+        params = {
+            'applicationId': APP_ID,
+            'shopCode': shop_code,
+            'keyword': search_code,
+            'hits': 10,
+            'format': 'json',
+            'availability': 1  # Include stock status
+        }
+        
+        try:
+            print(f"Searching in {shop_info['name']} with code: {search_code}")
+            response = requests.get(API_ENDPOINT, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get('Items'):
+                for item_data in data['Items']:
+                    item = item_data['Item']
+                    
+                    # Calculate values
+                    price = item.get('itemPrice', 0)
+                    points = item.get('points', 0)
+                    tax_rate = 1.1  # 10% tax rate
+                    
+                    details = {
+                        'original_sku': code,
+                        'shop_name': shop_info['name'],
+                        'shop_code': shop_code,
+                        'search_code_used': search_code,
+                        'product_info': {
+                            '商品管理番号': item.get('itemCode', 'N/A').replace(f"{shop_code}:", ''),
+                            '商品名': item.get('itemName', 'N/A'),
+                            '検索条件': code,
+                            '検索除外': '-',
+                            '在庫': '○' if item.get('availability', 0) == 1 else '×',
+                            '定価': '-',
+                            '仕入金額': '-',
+                            '平均単価': '-',
+                            'FA売価(税抜)': int(price / tax_rate) if price else 0,
+                            '粗利': '-',
+                            'RT後の利益': '-',
+                            'FA売価(税込)': price
+                        },
+                        'shop_info': {
+                            '価格': price,
+                            'ポイント': points,
+                            'クーポン': item.get('couponPrice', 0),
+                            '在庫状況': '在庫あり' if item.get('availability', 0) == 1 else '在庫なし',
+                            'URL': item.get('itemUrl', '')
+                        }
+                    }
+                    all_items.append(details)
+            else:
+                print(f"No items found in {shop_info['name']} for code: {search_code}")
+                    
+        except Exception as e:
+            print(f"Error fetching data for {code} from {shop_info['name']}: {e}")
+    
+    return {'items': all_items}
+
 def read_skus_from_excel(excel_path):
     """Read SKUs from first column of Excel file"""
     try:
@@ -82,66 +174,6 @@ def read_skus_from_excel(excel_path):
     except Exception as e:
         print(f"Error reading Excel file: {e}")
         return []
-
-def fetch_item_details(code: str) -> dict:
-    """Fetch detailed item information from e-life＆work shop"""
-    # Extract the base product code for search
-    search_code = code.split('-')[1] if '-' in code else code
-    
-    params = {
-        'applicationId': APP_ID,
-        'shopCode': SHOP_CODE,
-        'keyword': search_code,
-        'hits': 10,
-        'format': 'json',
-        'availability': 1  # Include stock status
-    }
-    
-    try:
-        response = requests.get(API_ENDPOINT, params=params)
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get('Items'):
-            items = []
-            for item_data in data['Items']:
-                item = item_data['Item']
-                
-                # Calculate values
-                price = item.get('itemPrice', 0)
-                points = item.get('points', 0)
-                tax_rate = 1.1  # 10% tax rate
-                
-                details = {
-                    'original_sku': code,
-                    'product_info': {
-                        '商品管理番号': item.get('itemCode', 'N/A').replace('waste:', ''),
-                        '商品名': item.get('itemName', 'N/A'),
-                        '検索条件': code,
-                        '検索除外': '-',
-                        '在庫': '○' if item.get('availability', 0) == 1 else '×',
-                        '定価': '-',
-                        '仕入金額': '-',
-                        '平均単価': '-',
-                        'FA売価(税抜)': int(price / tax_rate) if price else 0,
-                        '粗利': '-',
-                        'RT後の利益': '-',
-                        'FA売価(税込)': price
-                    },
-                    'shop_info': {
-                        '価格': price,
-                        'ポイント': points,
-                        'クーポン': item.get('couponPrice', 0),
-                        '在庫状況': '在庫あり' if item.get('availability', 0) == 1 else '在庫なし'
-                    }
-                }
-                items.append(details)
-            return {'items': items}
-        return {'items': []}
-                
-    except Exception as e:
-        print(f"Error fetching data for {code}: {e}")
-        return {'items': [], 'error': str(e)}
 
 def print_table_header(columns: List[str], widths: List[int]) -> None:
     """Print table header with proper formatting"""
@@ -191,15 +223,38 @@ def main():
         
     print(f"Processing {len(skus)} SKUs...")
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("\nSearching in the following shops:")
+    for shop_code, shop_info in SHOPS.items():
+        print(f"- {shop_info['name']} ({shop_code})")
+        print(f"  URL: {shop_info['base_url']}")
+        print(f"  Description: {shop_info['description']}\n")
     
     # Process all SKUs
-    all_results = {'items': []}
+    all_results = {
+        'items': [],
+        'shops_searched': {
+            shop_code: {
+                'name': info['name'],
+                'base_url': info['base_url'],
+                'description': info['description']
+            } for shop_code, info in SHOPS.items()
+        }
+    }
     processed_count = 0
+    items_per_shop = {shop_code: 0 for shop_code in SHOPS.keys()}
     
     for sku in skus:
         start_item_time = time.time()
-        print(f"Fetching data for SKU: {sku}")
+        print(f"\nFetching data for SKU: {sku}")
         result = fetch_item_details(sku)
+        
+        # Count items per shop
+        for item in result['items']:
+            shop_name = item['shop_name']
+            shop_code = next((code for code, info in SHOPS.items() if info['name'] == shop_name), None)
+            if shop_code:
+                items_per_shop[shop_code] += 1
+        
         all_results['items'].extend(result['items'])
         processed_count += len(result['items'])
         
@@ -217,6 +272,7 @@ def main():
         'average_time_per_sku': round(total_time / len(skus), 2) if skus else 0,
         'total_skus_processed': len(skus),
         'total_items_found': processed_count,
+        'items_per_shop': items_per_shop,
         'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
     
@@ -228,7 +284,9 @@ def main():
     print(f"Total time: {total_time:.2f} seconds")
     print(f"Average time per SKU: {total_time / len(skus):.2f} seconds")
     print(f"Total SKUs processed: {len(skus)}")
-    print(f"Total items found: {processed_count}")
+    print(f"Items found per shop:")
+    for shop_code, count in items_per_shop.items():
+        print(f"- {SHOPS[shop_code]['name']}: {count} items")
     print(f"Results saved to results.json")
 
 if __name__ == "__main__":
