@@ -25,6 +25,20 @@ SHOPS = {
         'base_url': 'https://item.rakuten.co.jp/kougushop/',
         'description': 'Specialized in tools and safety equipment',
         'sku_format': lambda sku: f"{sku.split('-')[1]}-{sku.split('-')[2]}"  # Format: 1271a029-025
+    },
+    'kouei-sangyou': {  # 晃栄産業
+        'name': '晃栄産業',
+        'shop_code': 'kouei-sangyou',
+        'base_url': 'https://item.rakuten.co.jp/kouei-sangyou/',
+        'description': 'Industrial safety equipment supplier',
+        'sku_format': lambda sku: f"fcp209"  # Fixed format for CP209
+    },
+    'dear-worker': {  # dear-worker
+        'name': 'dear-worker',
+        'shop_code': 'dear-worker',
+        'base_url': 'https://item.rakuten.co.jp/dear-worker/',
+        'description': 'Worker safety equipment specialist',
+        'sku_format': lambda sku: f"cp209boa"  # Fixed format for CP209 BOA
     }
 }
 
