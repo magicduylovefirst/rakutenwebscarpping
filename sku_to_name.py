@@ -5,6 +5,7 @@ import re
 import pandas as pd
 from typing import List, Dict
 from datetime import datetime
+import base64
 
 # Constants
 API_ENDPOINT = 'https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601'
@@ -111,72 +112,160 @@ def format_sku_for_shop(sku: str, shop_info: dict) -> str:
         print(f"Error formatting SKU {sku} for {shop_info['name']}: {e}")
         return sku
 
-def fetch_item_details(code: str) -> dict:
-    """Fetch detailed item information from multiple shops"""
-    all_items = []
-    
-    for shop_code, shop_info in SHOPS.items():
-        search_code = format_sku_for_shop(code, shop_info)
+def fetch_rms_details(manage_number: str) -> dict:
+    """Fetch detailed product info from RMS API using manageNumber"""
+    try:
+        # Your credentials
+        service_secret = "SP208989_Rj1XXyKcXKwL813w"
+        license_key = "SL208989_j675LcBF0x444bE6"
         
+        # Create Authorization header
+        raw_credential = f"{service_secret}:{license_key}"
+        encoded_credential = base64.b64encode(raw_credential.encode()).decode()
+        authorization_header = f"ESA {encoded_credential}"
+        
+        # API endpoint
+        url = f"https://api.rms.rakuten.co.jp/es/2.0/items/manage-numbers/{manage_number}"
+        headers = {
+            'Authorization': authorization_header,
+            'Content-Type': 'application/json'
+        }
+
+        print(f"Fetching RMS data for manageNumber: {manage_number}")
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 404:
+            print(f"Item not found in RMS API for manageNumber: {manage_number}")
+            return {
+                'title': 'N/A',
+                'reference_price': '-',
+                'standard_price': 0
+            }
+            
+        response.raise_for_status()
+        rms_data = response.json()
+        
+        # Get first variant (if exists) for pricing
+        variant_data = list(rms_data.get("variants", {}).values())[0] if rms_data.get("variants") else {}
+        reference_price = variant_data.get("referencePrice", {}).get("value") or '-'
+        standard_price = variant_data.get("standardPrice", 0)
+        
+        return {
+            'title': rms_data.get('title', 'N/A'),
+            'reference_price': reference_price,
+            'standard_price': standard_price
+        }
+    except Exception as e:
+        print(f"[RMS API ERROR] manageNumber={manage_number}: {e}")
+        return {
+            'title': 'N/A',
+            'reference_price': '-',
+            'standard_price': 0
+        }
+
+def fetch_ichiba_details(code: str, shop_code: str, shop_info: dict) -> list:
+    """Fetch shop-specific info from Ichiba API"""
+    try:
+        search_code = format_sku_for_shop(code, shop_info)
         params = {
             'applicationId': APP_ID,
             'shopCode': shop_code,
             'keyword': search_code,
             'hits': 10,
             'format': 'json',
-            'availability': 1  # Include stock status
+            'availability': 1
         }
         
-        try:
-            print(f"Searching in {shop_info['name']} with code: {search_code}")
-            response = requests.get(API_ENDPOINT, params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get('Items'):
-                for item_data in data['Items']:
-                    item = item_data['Item']
-                    
-                    # Calculate values
-                    price = item.get('itemPrice', 0)
-                    points = item.get('points', 0)
-                    tax_rate = 1.1  # 10% tax rate
-                    manageNumber=item.get('itemCode', 'N/A').replace(f"{shop_code}:", '')
-                    details = {
-                        'original_sku': code,
-                        'shop_name': shop_info['name'],
-                        'shop_code': shop_code,
-                        'search_code_used': search_code,
-                        'product_info': {
-                            '商品管理番号': manageNumber,
-                            '商品名': item.get('itemName', 'N/A'),
-                            '検索条件': code,
-                            '検索除外': '-',
-                            '在庫': '○' if item.get('availability', 0) == 1 else '×',
-                            '定価': '-',
-                            '仕入金額': '-',
-                            '平均単価': '-',
-                            'FA売価(税抜)': int(price / tax_rate) if price else 0,
-                            '粗利': '-',
-                            'RT後の利益': '-',
-                            'FA売価(税込)': price
-                        },
-                        'shop_info': {
-                            '価格': price,
-                            'ポイント': points,
-                            'クーポン': item.get('couponPrice', 0),
-                            '在庫状況': '在庫あり' if item.get('availability', 0) == 1 else '在庫なし',
-                            'URL': item.get('itemUrl', '')
-                        }
-                    }
-                    all_items.append(details)
-            else:
-                print(f"No items found in {shop_info['name']} for code: {search_code}")
-                    
-        except Exception as e:
-            print(f"Error fetching data for {code} from {shop_info['name']}: {e}")
+        print(f"Searching in Ichiba API for {shop_info['name']} with code: {search_code}")
+        response = requests.get(API_ENDPOINT, params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        shop_items = []
+        if data.get('Items'):
+            for item_data in data['Items']:
+                item = item_data['Item']
+                price = item.get('itemPrice', 0)
+                
+                shop_items.append({
+                    'manage_number': item.get('itemCode', 'N/A').replace(f"{shop_code}:", ''),
+                    'price': price,
+                    'points': item.get('points', 0),
+                    'coupon': item.get('couponPrice', 0),
+                    'availability': item.get('availability', 0),
+                    'url': item.get('itemUrl', ''),
+                    'name': item.get('itemName', 'N/A')
+                })
+        return shop_items
+    except Exception as e:
+        print(f"[Ichiba API ERROR] code={code}, shop={shop_code}: {e}")
+        return []
+
+def fetch_item_details(code: str) -> dict:
+    """Fetch detailed item information from multiple shops"""
+    items_by_sku = {}  # Dictionary to group items by SKU
+    tax_rate = 1.1
     
+    # Fetch data from each shop using Ichiba API
+    for shop_code, shop_info in SHOPS.items():
+        ichiba_items = fetch_ichiba_details(code, shop_code, shop_info)
+        
+        for ichiba_item in ichiba_items:
+            manage_number = ichiba_item['manage_number']
+            price = ichiba_item['price']
+            
+            # Get RMS data using manageNumber from Ichiba
+            rms_data = fetch_rms_details(manage_number)
+            standard_price = rms_data['standard_price']
+            fa_price_ex_tax = int(int(standard_price) / tax_rate) if standard_price else int(price / tax_rate)
+            
+            # Create or update item entry
+            if code not in items_by_sku:
+                items_by_sku[code] = {
+                    'original_sku': code,
+                    'search_code_used': format_sku_for_shop(code, shop_info),
+                    'product_info': {
+                        '商品管理番号': manage_number,
+                        '商品名': rms_data['title'] or ichiba_item['name'],
+                        '検索条件': code,
+                        '検索除外': '-',
+                        '在庫': '○' if ichiba_item['availability'] == 1 else '×',
+                        '定価': rms_data['reference_price'],
+                        '仕入金額': '-',
+                        '平均単価': '-',
+                        'FA売価(税抜)': fa_price_ex_tax,
+                        '粗利': '-',
+                        'RT後の利益': '-',
+                        'FA売価(税込)': price
+                    },
+                    'shop_info': {}  # Will hold multiple shop entries
+                }
+            
+            # Add shop-specific info
+            items_by_sku[code]['shop_info'][shop_code] = {
+                'shop_name': shop_info['name'],
+                'shop_code': shop_code,
+                '価格': price,
+                'ポイント': ichiba_item['points'],
+                'クーポン': ichiba_item['coupon'],
+                '在庫状況': '在庫あり' if ichiba_item['availability'] == 1 else '在庫なし',
+                'URL': ichiba_item['url']
+            }
+            
+            # Debug output
+            print(f"\nProcessed item:")
+            print(f"SKU: {code}")
+            print(f"Shop: {shop_info['name']}")
+            print(f"ManageNumber: {manage_number}")
+            print(f"RMS Title: {rms_data['title']}")
+            print(f"Ichiba Price: {price}")
+            print(f"RMS Standard Price: {standard_price}")
+            print(f"FA Price (excl. tax): {fa_price_ex_tax}")
+    
+    # Convert dictionary to list
+    all_items = list(items_by_sku.values())
     return {'items': all_items}
+
 
 def read_skus_from_excel(excel_path):
     """Read SKUs from first column of Excel file"""
@@ -264,10 +353,10 @@ def main():
         
         # Count items per shop
         for item in result['items']:
-            shop_name = item['shop_name']
-            shop_code = next((code for code, info in SHOPS.items() if info['name'] == shop_name), None)
-            if shop_code:
-                items_per_shop[shop_code] += 1
+            for shop_info in item['shop_info'].values():
+                shop_code = shop_info['shop_code']
+                if shop_code in items_per_shop:
+                    items_per_shop[shop_code] += 1
         
         all_results['items'].extend(result['items'])
         processed_count += len(result['items'])
