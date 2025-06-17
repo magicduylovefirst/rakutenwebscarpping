@@ -13,6 +13,42 @@ from datetime import datetime
 import threading
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+from functools import partial
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Constants
+MAX_WORKERS = 4  # Adjust based on your system's capabilities
+WAIT_TIMEOUT = 10  # Maximum wait time for elements
+PAGE_LOAD_WAIT = 1  # Reduced from 2 seconds
+
+class WebDriverPool:
+    def __init__(self, pool_size):
+        self.pool = Queue()
+        self.pool_size = pool_size
+        self.initialize_pool()
+
+    def initialize_pool(self):
+        for _ in range(self.pool_size):
+            driver = setup_webdriver()
+            self.pool.put(driver)
+
+    def get_driver(self):
+        return self.pool.get()
+
+    def return_driver(self, driver):
+        self.pool.put(driver)
+
+    def close_all(self):
+        while not self.pool.empty():
+            driver = self.pool.get()
+            driver.quit()
 
 def read_skus_from_excel(excel_path):
     """Read SKUs from first column of Excel file"""
@@ -25,219 +61,197 @@ def read_skus_from_excel(excel_path):
         return []
 
 def setup_webdriver():
-    """Setup and return configured Chrome WebDriver"""
+    """Setup and return configured Chrome WebDriver with optimized settings"""
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-infobars")
+    chrome_options.add_argument("--disable-notifications")
+    chrome_options.page_load_strategy = 'eager'  # Don't wait for all resources to load
+    
     service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=chrome_options)
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    driver.set_page_load_timeout(30)
+    return driver
+
+def wait_for_element(driver, selector, by=By.CSS_SELECTOR, timeout=WAIT_TIMEOUT):
+    """Wait for element with better error handling"""
+    try:
+        element = WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((by, selector))
+        )
+        return element
+    except Exception:
+        return None
+
+def process_variant(driver, variant_url, color=None, size=None):
+    """Process a single variant with optimized waits"""
+    variant_info = {
+        'color': color,
+        'size': size,
+        'variant_id': variant_url.split('variantId=')[-1],
+        'url': variant_url,
+        '価格': None,
+        'ポイント': None,
+        'クーポン': None,
+        '在庫状況': None
+    }
+
+    try:
+        driver.get(variant_url)
+        
+        # Price
+        price_selectors = [
+            "div.value--1oSD_.layout-inline--2z490.size-x-large--DyMl5.style-bold500--1X0Xl.color-crimson--2uc0e.align-right--3POGa",
+            "span.price--OX_YW"
+        ]
+        for selector in price_selectors:
+            element = wait_for_element(driver, selector)
+            if element:
+                variant_info['価格'] = int(element.text.replace('円', '').replace(',', ''))
+                break
+
+        # Points
+        points_selectors = [
+            "div.point-summary__total___3rYYD span",
+            "span.price--point-badge_item"
+        ]
+        for selector in points_selectors:
+            element = wait_for_element(driver, selector)
+            if element:
+                points_text = element.text.replace('ポイント', '').replace(',', '')
+                variant_info['ポイント'] = int(points_text) if points_text.isdigit() else None
+                break
+
+        # Coupon
+        coupon_element = wait_for_element(driver, "div.coupon")
+        if coupon_element:
+            coupon_text = coupon_element.text
+            if coupon_text:
+                coupon_value = int(''.join(filter(str.isdigit, coupon_text)))
+                variant_info['クーポン'] = coupon_value
+
+        # Stock status
+        out_of_stock = wait_for_element(driver, "//*[contains(text(), '売り切れ')]", By.XPATH)
+        if out_of_stock:
+            variant_info['在庫状況'] = '在庫なし'
+        else:
+            in_stock = wait_for_element(driver, "//*[contains(text(), '在庫あり')]", By.XPATH)
+            if in_stock:
+                variant_info['在庫状況'] = '在庫あり'
+
+    except Exception as e:
+        logger.error(f"Error processing variant {variant_url}: {e}")
+
+    return variant_info
 
 def get_variant_info(driver, base_url):
-    """Get all variants information including colors and sizes"""
+    """Get all variants information using concurrent processing"""
     variants = []
     try:
-        # Get color variants
+        driver.get(base_url)
+        
+        # Get color and size buttons
         color_buttons = driver.find_elements(By.CSS_SELECTOR, "div.grid-cols-2--1uI00 button.type-sku-button--BJoVv")
         size_buttons = driver.find_elements(By.CSS_SELECTOR, "div.grid-cols-5--3wKbc button.type-sku-button--BJoVv")
         
         # Extract color and size information
-        colors = []
-        for btn in color_buttons:
-            color_name = btn.get_attribute('aria-label')
-            is_selected = 'selected--Mg4iu' in btn.get_attribute('class')
-            colors.append({
-                'name': color_name,
-                'selected': is_selected
-            })
-            
-        sizes = []
-        for btn in size_buttons:
-            size_name = btn.get_attribute('aria-label')
-            is_selected = 'selected--Mg4iu' in btn.get_attribute('class')
-            sizes.append({
-                'name': size_name,
-                'selected': is_selected
-            })
+        colors = [{'name': btn.get_attribute('aria-label')} for btn in color_buttons]
+        sizes = [{'name': btn.get_attribute('aria-label')} for btn in size_buttons]
 
-        # Generate all possible combinations
+        # Generate variant URLs
+        variant_tasks = []
         variant_id = 1
-        for color in colors:
-            for size in sizes:
-                variant_url = f"{base_url}&variantId=r-sku{variant_id:08d}"
-                variants.append({
-                    'color': color['name'],
-                    'size': size['name'],
-                    'variant_id': f"r-sku{variant_id:08d}",
-                    'url': variant_url,
-                    '価格': None,
-                    'ポイント': None,
-                    'クーポン': None,
-                    '在庫状況': None
-                })
-                variant_id += 1
+        
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            for color in colors:
+                for size in sizes:
+                    variant_url = f"{base_url}&variantId=r-sku{variant_id:08d}"
+                    task = executor.submit(
+                        process_variant,
+                        driver,
+                        variant_url,
+                        color['name'],
+                        size['name']
+                    )
+                    variant_tasks.append(task)
+                    variant_id += 1
 
-                # Visit variant URL and get its information
-                driver.get(variant_url)
-                time.sleep(1)  # Wait for page to load
-
+            # Collect results
+            for future in as_completed(variant_tasks):
                 try:
-                    # Get price - try both new and old selectors
-                    price_element = None
-                    try:
-                        price_element = driver.find_element(By.CSS_SELECTOR, "div.value--1oSD_.layout-inline--2z490.size-x-large--DyMl5.style-bold500--1X0Xl.color-crimson--2uc0e.align-right--3POGa")
-                    except:
-                        price_element = driver.find_element(By.CSS_SELECTOR, "span.price--OX_YW")
-                    
-                    if price_element:
-                        variants[-1]['価格'] = int(price_element.text.replace('円', '').replace(',', ''))
-                except:
-                    pass
-
-                try:
-                    # Get points
-                    points_element = driver.find_element(By.CSS_SELECTOR, "div.point-summary__total___3rYYD span")
-                    if not points_element:
-                        points_element = driver.find_element(By.CSS_SELECTOR, "span.price--point-badge_item")
-                    
-                    if points_element:
-                        points_text = points_element.text.replace('ポイント', '').replace(',', '')
-                        variants[-1]['ポイント'] = int(points_text) if points_text.isdigit() else None
-                except:
-                    pass
-
-                try:
-                    # Get coupon
-                    coupon_element = driver.find_element(By.CSS_SELECTOR, "div.coupon")
-                    coupon_text = coupon_element.text
-                    if coupon_text:
-                        coupon_value = int(''.join(filter(str.isdigit, coupon_text)))
-                        variants[-1]['クーポン'] = coupon_value
-                except:
-                    pass
-
-                try:
-                    # Check inventory status
-                    out_of_stock = driver.find_elements(By.XPATH, "//*[contains(text(), '売り切れ')]")
-                    if out_of_stock:
-                        variants[-1]['在庫状況'] = '在庫なし'
-                    else:
-                        in_stock = driver.find_elements(By.XPATH, "//*[contains(text(), '在庫あり')]")
-                        if in_stock:
-                            variants[-1]['在庫状況'] = '在庫あり'
-                except:
-                    pass
+                    variant_info = future.result()
+                    if variant_info:
+                        variants.append(variant_info)
+                except Exception as e:
+                    logger.error(f"Error collecting variant result: {e}")
 
     except Exception as e:
-        print(f"Error getting variants: {e}")
+        logger.error(f"Error getting variants: {e}")
     
     return variants
 
 def get_kougushop_variant_info(driver, base_url):
-    """Get variants information for kougushop"""
+    """Get variants information for kougushop using concurrent processing"""
     variants = []
     try:
-        # For kougushop, variants are numbered from 8021 to 8034 for sizes 22.5 to 30
         sizes = ['22.5', '23', '23.5', '24', '24.5', '25', '25.5', '26', '26.5', '27', '27.5', '28', '29', '30']
-        for idx, size in enumerate(sizes, 8021):
-            variant_url = f"{base_url}&variantId={idx}"
-            variants.append({
-                'size': size,
-                'variant_id': str(idx),
-                'url': variant_url,
-                '価格': None,
-                'ポイント': None,
-                'クーポン': None,
-                '在庫状況': None
-            })
+        variant_tasks = []
+        
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            for idx, size in enumerate(sizes, 8021):
+                variant_url = f"{base_url}&variantId={idx}"
+                task = executor.submit(
+                    process_variant,
+                    driver,
+                    variant_url,
+                    None,
+                    size
+                )
+                variant_tasks.append(task)
 
-            # Visit variant URL and get its information
-            driver.get(variant_url)
-            time.sleep(1)  # Wait for page to load
-
-            try:
-                # Get price - try both new and old selectors
-                price_element = None
+            # Collect results
+            for future in as_completed(variant_tasks):
                 try:
-                    price_element = driver.find_element(By.CSS_SELECTOR, "div.value--1oSD_.layout-inline--2z490.size-x-large--DyMl5.style-bold500--1X0Xl.color-crimson--2uc0e.align-right--3POGa")
-                except:
-                    price_element = driver.find_element(By.CSS_SELECTOR, "span.price--OX_YW")
-                
-                if price_element:
-                    variants[-1]['価格'] = int(price_element.text.replace('円', '').replace(',', ''))
-            except:
-                pass
-
-            try:
-                # Get points
-                points_element = driver.find_element(By.CSS_SELECTOR, "div.point-summary__total___3rYYD span")
-                if not points_element:
-                    points_element = driver.find_element(By.CSS_SELECTOR, "span.price--point-badge_item")
-                
-                if points_element:
-                    points_text = points_element.text.replace('ポイント', '').replace(',', '')
-                    variants[-1]['ポイント'] = int(points_text) if points_text.isdigit() else None
-            except:
-                pass
-
-            try:
-                # Get coupon
-                coupon_element = driver.find_element(By.CSS_SELECTOR, "div.coupon")
-                coupon_text = coupon_element.text
-                if coupon_text:
-                    coupon_value = int(''.join(filter(str.isdigit, coupon_text)))
-                    variants[-1]['クーポン'] = coupon_value
-            except:
-                pass
-
-            try:
-                # Check inventory status
-                out_of_stock = driver.find_elements(By.XPATH, "//*[contains(text(), '売り切れ')]")
-                if out_of_stock:
-                    variants[-1]['在庫状況'] = '在庫なし'
-                else:
-                    in_stock = driver.find_elements(By.XPATH, "//*[contains(text(), '在庫あり')]")
-                    if in_stock:
-                        variants[-1]['在庫状況'] = '在庫あり'
-            except:
-                pass
+                    variant_info = future.result()
+                    if variant_info:
+                        variants.append(variant_info)
+                except Exception as e:
+                    logger.error(f"Error collecting kougushop variant result: {e}")
 
     except Exception as e:
-        print(f"Error getting kougushop variants: {e}")
+        logger.error(f"Error getting kougushop variants: {e}")
     
     return variants
 
 def scrape_product_info(driver, url, is_waste_shop=False, is_kougushop=False, is_kouei_shop=False, is_dear_worker=False):
-    """Scrape product information from a given URL"""
+    """Scrape product information with optimized variant handling"""
     try:
-        driver.get(url)
-        time.sleep(2)  # Wait for page to load
-
-        # Initialize product info dictionary
+        base_url = url.split('&variantId=')[0] if '&variantId=' in url else url
         product_info = {
             'url': url,
-            'variants': [] if (is_waste_shop or is_kougushop or is_kouei_shop or is_dear_worker) else None
+            'variants': []
         }
 
-        # Get variants based on shop type
-        if is_waste_shop or is_kougushop or is_kouei_shop or is_dear_worker:
-            base_url = url.split('&variantId=')[0] if '&variantId=' in url else url
-            if is_waste_shop or is_kouei_shop or is_dear_worker:
-                product_info['variants'] = get_variant_info(driver, base_url)
-            elif is_kougushop:
-                product_info['variants'] = get_kougushop_variant_info(driver, base_url)
+        if is_waste_shop or is_kouei_shop or is_dear_worker:
+            product_info['variants'] = get_variant_info(driver, base_url)
+        elif is_kougushop:
+            product_info['variants'] = get_kougushop_variant_info(driver, base_url)
 
         return product_info
 
     except Exception as e:
-        print(f"Error scraping URL {url}: {e}")
+        logger.error(f"Error scraping URL {url}: {e}")
         return None
 
-def scrape_shop(shop_code, shop_info, sku, result_queue):
-    """Scrape a single shop in a separate thread"""
+def scrape_shop(driver_pool, shop_code, shop_info, sku, result_queue):
+    """Scrape a single shop using the driver pool"""
     driver = None
     try:
-        driver = setup_webdriver()
+        driver = driver_pool.get_driver()
         
         # Generate shop-specific URL
         if shop_code == 'waste':
@@ -255,32 +269,29 @@ def scrape_shop(shop_code, shop_info, sku, result_queue):
             'URL': url
         }
 
-        print(f"  Scraping {shop_info['name']} ({url})")
-        
-        # Check shop type
-        is_waste_shop = shop_code == 'waste'
-        is_kougushop = shop_code == 'kougushop'
-        is_kouei_shop = shop_code == 'kouei-sangyou'
-        is_dear_worker = shop_code == 'dear-worker'
+        logger.info(f"Scraping {shop_info['name']} ({url})")
         
         # Scrape product info
-        product_info = scrape_product_info(driver, url, is_waste_shop, is_kougushop, is_kouei_shop, is_dear_worker)
+        product_info = scrape_product_info(
+            driver, 
+            url,
+            is_waste_shop=(shop_code == 'waste'),
+            is_kougushop=(shop_code == 'kougushop'),
+            is_kouei_shop=(shop_code == 'kouei-sangyou'),
+            is_dear_worker=(shop_code == 'dear-worker')
+        )
         
-        if product_info:
-            if (is_waste_shop or is_kouei_shop or is_dear_worker) and product_info['variants']:
-                shop_result['variants'] = product_info['variants']
-            elif is_kougushop and product_info['variants']:
-                shop_result['variants'] = product_info['variants']
+        if product_info and product_info['variants']:
+            shop_result['variants'] = product_info['variants']
 
-        # Put result in queue
         result_queue.put((shop_code, shop_result))
 
     except Exception as e:
-        print(f"Error scraping {shop_code}: {e}")
+        logger.error(f"Error scraping {shop_code}: {e}")
         result_queue.put((shop_code, None))
     finally:
         if driver:
-            driver.quit()
+            driver_pool.return_driver(driver)
 
 def main():
     start_time = time.time()
@@ -290,12 +301,12 @@ def main():
     skus = read_skus_from_excel(excel_path)
     
     if not skus:
-        print("No SKUs found in Excel file")
+        logger.error("No SKUs found in Excel file")
         return
 
-    print(f"Found {len(skus)} SKUs to process")
+    logger.info(f"Found {len(skus)} SKUs to process")
 
-    # Create new results structure
+    # Initialize results structure
     results = {
         'items': [],
         'metadata': {
@@ -324,10 +335,13 @@ def main():
         }
     }
 
+    # Initialize WebDriver pool
+    driver_pool = WebDriverPool(MAX_WORKERS)
+
     try:
         # Process each SKU
         for idx, sku in enumerate(skus, 1):
-            print(f"\nProcessing SKU {idx}/{len(skus)}: {sku}")
+            logger.info(f"\nProcessing SKU {idx}/{len(skus)}: {sku}")
             sku_start_time = time.time()
             
             # Initialize item structure
@@ -359,7 +373,7 @@ def main():
             for shop_code, shop_info in shops.items():
                 thread = threading.Thread(
                     target=scrape_shop,
-                    args=(shop_code, shop_info, sku, result_queue)
+                    args=(driver_pool, shop_code, shop_info, sku, result_queue)
                 )
                 threads.append(thread)
                 thread.start()
@@ -383,11 +397,11 @@ def main():
             avg_time = total_elapsed / idx
             remaining_time = (len(skus) - idx) * avg_time
             
-            print(f"  Time for this SKU: {elapsed_time:.2f}s")
-            print(f"  Progress: {idx}/{len(skus)} ({idx/len(skus)*100:.1f}%)")
-            print(f"  Estimated time remaining: {remaining_time/60:.1f} minutes")
+            logger.info(f"Time for this SKU: {elapsed_time:.2f}s")
+            logger.info(f"Progress: {idx}/{len(skus)} ({idx/len(skus)*100:.1f}%)")
+            logger.info(f"Estimated time remaining: {remaining_time/60:.1f} minutes")
 
-            # Save results after each item (in case of interruption)
+            # Save results after each item
             results['metadata'].update({
                 'processed_skus': idx,
                 'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -409,12 +423,14 @@ def main():
         with open('results.json', 'w', encoding='utf-8') as f:
             json.dump(results, ensure_ascii=False, indent=2, fp=f)
 
-        print("\nScraping completed successfully!")
-        print(f"Total time: {time.time() - start_time:.2f} seconds")
-        print(f"Average time per SKU: {(time.time() - start_time)/len(skus):.2f} seconds")
+        logger.info("\nScraping completed successfully!")
+        logger.info(f"Total time: {time.time() - start_time:.2f} seconds")
+        logger.info(f"Average time per SKU: {(time.time() - start_time)/len(skus):.2f} seconds")
 
     except Exception as e:
-        print(f"Error in main process: {e}")
+        logger.error(f"Error in main process: {e}")
+    finally:
+        driver_pool.close_all()
 
 if __name__ == "__main__":
     main() 

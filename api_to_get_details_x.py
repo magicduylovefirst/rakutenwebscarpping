@@ -226,17 +226,12 @@ def fetch_item_details(code: str) -> dict:
                     'search_code_used': format_sku_for_shop(code, shop_info),
                     'product_info': {
                         '商品管理番号': manage_number,
-                        '商品名': rms_data['title'] or ichiba_item['name'],
+                        '商品名':  ichiba_item['name'],
                         '検索条件': code,
                         '検索除外': '-',
                         '在庫': '○' if ichiba_item['availability'] == 1 else '×',
-                        '定価': rms_data['reference_price'],
                         '仕入金額': '-',
-                        '平均単価': '-',
-                        'FA売価(税抜)': fa_price_ex_tax,
-                        '粗利': '-',
-                        'RT後の利益': '-',
-                        'FA売価(税込)': price
+                        'FA売価(税抜)': fa_price_ex_tax
                     },
                     'shop_info': {}  # Will hold multiple shop entries
                 }
@@ -265,7 +260,6 @@ def fetch_item_details(code: str) -> dict:
     # Convert dictionary to list
     all_items = list(items_by_sku.values())
     return {'items': all_items}
-
 
 def read_skus_from_excel(excel_path):
     """Read SKUs from first column of Excel file"""
