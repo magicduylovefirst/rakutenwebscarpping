@@ -7,6 +7,8 @@ from typing import List, Dict
 from datetime import datetime
 import base64
 import openpyxl
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 # Constants
 API_ENDPOINT = 'https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601'
@@ -22,8 +24,8 @@ SHOPS = {
         'sku_format': lambda sku: sku.split('-')[1]  # Extract model number (e.g., 1271a029)
     },
     'kougushop': {  # 工具ショップ
-        'name': '工具ショップ',
         'shop_code': 'kougushop',
+        'name': '工具ショップ',
         'base_url': 'https://item.rakuten.co.jp/kougushop/',
         'description': 'Specialized in tools and safety equipment',
         'sku_format': lambda sku: f"{sku.split('-')[1]}-{sku.split('-')[2]}"  # Format: 1271a029-025
@@ -43,6 +45,14 @@ SHOPS = {
         'sku_format': lambda sku: f"cp209boa"  # Fixed format for CP209 BOA
     }
 }
+
+# Thread-safe print lock
+print_lock = Lock()
+
+def safe_print(*args, **kwargs):
+    """Thread-safe print function"""
+    with print_lock:
+        print(*args, **kwargs)
 
 def truncate_str(s: str, length: int) -> str:
     """Truncate string to specified length, adding ... if truncated"""
@@ -110,59 +120,8 @@ def format_sku_for_shop(sku: str, shop_info: dict) -> str:
     try:
         return shop_info['sku_format'](sku)
     except Exception as e:
-        print(f"Error formatting SKU {sku} for {shop_info['name']}: {e}")
+        safe_print(f"Error formatting SKU {sku} for {shop_info['name']}: {e}")
         return sku
-
-def fetch_rms_details(manage_number: str) -> dict:
-    """Fetch detailed product info from RMS API using manageNumber"""
-    try:
-        # Your credentials
-        service_secret = "SP208989_Rj1XXyKcXKwL813w"
-        license_key = "SL208989_j675LcBF0x444bE6"
-        
-        # Create Authorization header
-        raw_credential = f"{service_secret}:{license_key}"
-        encoded_credential = base64.b64encode(raw_credential.encode()).decode()
-        authorization_header = f"ESA {encoded_credential}"
-        
-        # API endpoint
-        url = f"https://api.rms.rakuten.co.jp/es/2.0/items/manage-numbers/{manage_number}"
-        headers = {
-            'Authorization': authorization_header,
-            'Content-Type': 'application/json'
-        }
-
-        print(f"Fetching RMS data for manageNumber: {manage_number}")
-        response = requests.get(url, headers=headers)
-        
-        if response.status_code == 404:
-            print(f"Item not found in RMS API for manageNumber: {manage_number}")
-            return {
-                'title': 'N/A',
-                'reference_price': '-',
-                'standard_price': 0
-            }
-            
-        response.raise_for_status()
-        rms_data = response.json()
-        
-        # Get first variant (if exists) for pricing
-        variant_data = list(rms_data.get("variants", {}).values())[0] if rms_data.get("variants") else {}
-        reference_price = variant_data.get("referencePrice", {}).get("value") or '-'
-        standard_price = variant_data.get("standardPrice", 0)
-        
-        return {
-            'title': rms_data.get('title', 'N/A'),
-            'reference_price': reference_price,
-            'standard_price': standard_price
-        }
-    except Exception as e:
-        print(f"[RMS API ERROR] manageNumber={manage_number}: {e}")
-        return {
-            'title': 'N/A',
-            'reference_price': '-',
-            'standard_price': 0
-        }
 
 def fetch_ichiba_details(code: str, shop_code: str, shop_info: dict) -> list:
     """Fetch shop-specific info from Ichiba API"""
@@ -177,7 +136,7 @@ def fetch_ichiba_details(code: str, shop_code: str, shop_info: dict) -> list:
             'availability': 1
         }
         
-        print(f"Searching in Ichiba API for {shop_info['name']} with code: {search_code}")
+        safe_print(f"Searching in Ichiba API for {shop_info['name']} with code: {search_code}")
         response = requests.get(API_ENDPOINT, params=params)
         response.raise_for_status()
         data = response.json()
@@ -199,74 +158,71 @@ def fetch_ichiba_details(code: str, shop_code: str, shop_info: dict) -> list:
                 })
         return shop_items
     except Exception as e:
-        print(f"[Ichiba API ERROR] code={code}, shop={shop_code}: {e}")
+        safe_print(f"[Ichiba API ERROR] code={code}, shop={shop_code}: {e}")
         return []
 
-def fetch_item_details(code: str) -> dict:
-    """Fetch detailed item information from multiple shops"""
-    items_by_sku = {}  # Dictionary to group items by SKU
-    tax_rate = 1.1
+def process_shop(code: str, shop_code: str, shop_info: dict) -> dict:
+    """Process a single shop for a given SKU"""
+    ichiba_items = fetch_ichiba_details(code, shop_code, shop_info)
+    results = []
     
-    # Fetch data from each shop using Ichiba API
-    for shop_code, shop_info in SHOPS.items():
-        ichiba_items = fetch_ichiba_details(code, shop_code, shop_info)
+    for ichiba_item in ichiba_items:
+        price = ichiba_item['price']
+        fa_price_ex_tax = int(price / 1.1)  # Calculate tax-exclusive price
         
-        for ichiba_item in ichiba_items:
-            manage_number = ichiba_item['manage_number']
-            price = ichiba_item['price']
-            
-            # Get RMS data using manageNumber from Ichiba
-            rms_data = fetch_rms_details(manage_number)
-            standard_price = rms_data['standard_price']
-            fa_price_ex_tax = int(int(standard_price) / tax_rate) if standard_price else int(price / tax_rate)
-            
-            # Create or update item entry
-            if code not in items_by_sku:
-                items_by_sku[code] = {
-                    'original_sku': code,
-                    'search_code_used': format_sku_for_shop(code, shop_info),
-                    'product_info': {
-                        '商品管理番号': manage_number,
-                        '商品名':  ichiba_item['name'],
-                        '検索条件': code,
-                        '検索除外': '-',
-                        '在庫': '○' if ichiba_item['availability'] == 1 else '×',
-                        '定価': rms_data['reference_price'],
-                        '仕入金額': '-',
-                        '平均単価': '-',
-                        'FA売価(税抜)': fa_price_ex_tax,
-                        '粗利': '-',
-                        'RT後の利益': '-',
-                        'FA売価(税込)': price
-                    },
-                    'shop_info': {}  # Will hold multiple shop entries
+        result = {
+            'original_sku': code,
+            'search_code_used': format_sku_for_shop(code, shop_info),
+            'product_info': {
+                '商品管理番号': ichiba_item['manage_number'],
+                '商品名': ichiba_item['name'],
+                '検索条件': code,
+                '検索除外': '-',
+                '在庫': '○' if ichiba_item['availability'] == 1 else '×',
+                '定価': '-',
+                '仕入金額': '-',
+                '平均単価': '-',
+                'FA売価(税抜)': fa_price_ex_tax,
+                '粗利': '-',
+                'RT後の利益': '-',
+                'FA売価(税込)': price
+            },
+            'shop_info': {
+                shop_code: {
+                    'shop_name': shop_info['name'],
+                    'shop_code': shop_code,
+                    '価格': price,
+                    'ポイント': ichiba_item['points'],
+                    'クーポン': ichiba_item['coupon'],
+                    '在庫状況': '在庫あり' if ichiba_item['availability'] == 1 else '在庫なし',
+                    'URL': ichiba_item['url']
                 }
-            
-            # Add shop-specific info
-            items_by_sku[code]['shop_info'][shop_code] = {
-                'shop_name': shop_info['name'],
-                'shop_code': shop_code,
-                '価格': price,
-                'ポイント': ichiba_item['points'],
-                'クーポン': ichiba_item['coupon'],
-                '在庫状況': '在庫あり' if ichiba_item['availability'] == 1 else '在庫なし',
-                'URL': ichiba_item['url']
             }
-            
-            # Debug output
-            print(f"\nProcessed item:")
-            print(f"SKU: {code}")
-            print(f"Shop: {shop_info['name']}")
-            print(f"ManageNumber: {manage_number}")
-            print(f"RMS Title: {rms_data['title']}")
-            print(f"Ichiba Price: {price}")
-            print(f"RMS Standard Price: {standard_price}")
-            print(f"FA Price (excl. tax): {fa_price_ex_tax}")
+        }
+        results.append(result)
     
-    # Convert dictionary to list
-    all_items = list(items_by_sku.values())
-    return {'items': all_items}
+    return results
 
+def process_sku(sku: str) -> list:
+    """Process a single SKU across all shops"""
+    all_results = []
+    
+    # Process each shop in parallel
+    with ThreadPoolExecutor(max_workers=len(SHOPS)) as executor:
+        future_to_shop = {
+            executor.submit(process_shop, sku, shop_code, shop_info): (shop_code, shop_info)
+            for shop_code, shop_info in SHOPS.items()
+        }
+        
+        for future in as_completed(future_to_shop):
+            shop_code, shop_info = future_to_shop[future]
+            try:
+                results = future.result()
+                all_results.extend(results)
+            except Exception as e:
+                safe_print(f"Error processing {shop_code} for SKU {sku}: {e}")
+    
+    return all_results
 
 def read_skus_from_excel(excel_path):
     """Read SKUs from first column of Excel file"""
@@ -324,16 +280,8 @@ def main():
     if not skus:
         print("No SKUs found in Excel file")
         return
-        
-    print(f"Processing {len(skus)} SKUs...")
-    print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("\nSearching in the following shops:")
-    for shop_code, shop_info in SHOPS.items():
-        print(f"- {shop_info['name']} ({shop_code})")
-        print(f"  URL: {shop_info['base_url']}")
-        print(f"  Description: {shop_info['description']}\n")
     
-    # Process all SKUs
+    print(f"Processing {len(skus)} SKUs...")
     all_results = {
         'items': [],
         'shops_searched': {
@@ -344,28 +292,19 @@ def main():
             } for shop_code, info in SHOPS.items()
         }
     }
-    processed_count = 0
-    items_per_shop = {shop_code: 0 for shop_code in SHOPS.keys()}
     
-    for sku in skus:
-        start_item_time = time.time()
-        print(f"\nFetching data for SKU: {sku}")
-        result = fetch_item_details(sku)
+    # Process SKUs in parallel
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_sku = {executor.submit(process_sku, sku): sku for sku in skus}
         
-        # Count items per shop
-        for item in result['items']:
-            for shop_info in item['shop_info'].values():
-                shop_code = shop_info['shop_code']
-                if shop_code in items_per_shop:
-                    items_per_shop[shop_code] += 1
-        
-        all_results['items'].extend(result['items'])
-        processed_count += len(result['items'])
-        
-        # Calculate and show progress
-        elapsed_item_time = time.time() - start_item_time
-        print(f"Time for this SKU: {elapsed_item_time:.2f} seconds")
-        time.sleep(1)  # Be nice to Rakuten's servers
+        for future in as_completed(future_to_sku):
+            sku = future_to_sku[future]
+            try:
+                results = future.result()
+                all_results['items'].extend(results)
+                safe_print(f"Completed processing SKU: {sku}")
+            except Exception as e:
+                safe_print(f"Error processing SKU {sku}: {e}")
     
     # Calculate total time
     total_time = time.time() - start_time
@@ -375,8 +314,7 @@ def main():
         'total_time_seconds': round(total_time, 2),
         'average_time_per_sku': round(total_time / len(skus), 2) if skus else 0,
         'total_skus_processed': len(skus),
-        'total_items_found': processed_count,
-        'items_per_shop': items_per_shop,
+        'total_items_found': len(all_results['items']),
         'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
     
@@ -388,9 +326,7 @@ def main():
     print(f"Total time: {total_time:.2f} seconds")
     print(f"Average time per SKU: {total_time / len(skus):.2f} seconds")
     print(f"Total SKUs processed: {len(skus)}")
-    print(f"Items found per shop:")
-    for shop_code, count in items_per_shop.items():
-        print(f"- {SHOPS[shop_code]['name']}: {count} items")
+    print(f"Total items found: {len(all_results['items'])}")
     print(f"Results saved to results.json")
 
 def update_excel_with_results(json_path, excel_path):
