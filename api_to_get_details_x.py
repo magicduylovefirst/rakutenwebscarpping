@@ -6,6 +6,7 @@ import pandas as pd
 from typing import List, Dict
 from datetime import datetime
 import base64
+import openpyxl
 
 # Constants
 API_ENDPOINT = 'https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601'
@@ -226,7 +227,7 @@ def fetch_item_details(code: str) -> dict:
                     'search_code_used': format_sku_for_shop(code, shop_info),
                     'product_info': {
                         '商品管理番号': manage_number,
-                        '商品名': rms_data['title'] or ichiba_item['name'],
+                        '商品名':  ichiba_item['name'],
                         '検索条件': code,
                         '検索除外': '-',
                         '在庫': '○' if ichiba_item['availability'] == 1 else '×',
@@ -392,5 +393,59 @@ def main():
         print(f"- {SHOPS[shop_code]['name']}: {count} items")
     print(f"Results saved to results.json")
 
+def update_excel_with_results(json_path, excel_path):
+    """Update Excel file with results from JSON data"""
+    # Read JSON data
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    # Load Excel file
+    wb = openpyxl.load_workbook(excel_path)
+    ws = wb.active
+    
+    # Start from row 4 (as per previous pattern)
+    current_row = 4
+    
+    # Process each item
+    for item in data['items']:
+        product_info = item['product_info']
+        shop_info = item['shop_info']
+        
+        # Update common fields
+        if product_info.get('商品名'):
+            ws[f'C{current_row}'] = product_info['商品名']
+            
+        if product_info.get('商品管理番号'):
+            ws[f'B{current_row}'] = product_info['商品管理番号']
+            
+        if product_info.get('検索条件'):
+            ws[f'D{current_row}'] = product_info['検索条件']
+            
+        # Update price and tax fields
+        if product_info.get('FA売価(税込)'):
+            ws[f'H{current_row}'] = product_info['FA売価(税込)']
+            
+        # Update URLs for each shop
+        shop_column_mapping = {
+            'waste': 'R',           # e-life＆work shop
+            'kougushop': 'W',       # 工具ショップ
+            'kouei-sangyou': 'AB',  # 晃栄産業　楽天市場店
+            'dear-worker': 'AG'     # Dear worker ディアワーカー
+        }
+        
+        for shop_code, column in shop_column_mapping.items():
+            if shop_code in shop_info:
+                shop_data = shop_info[shop_code]
+                if 'URL' in shop_data:
+                    ws[f'{column}{current_row}'] = shop_data['URL']
+        
+        current_row += 1
+    
+    # Save the workbook
+    wb.save(excel_path)
+    print(f"\nExcel file updated: {excel_path}")
+
 if __name__ == "__main__":
-    main() 
+    main()
+    # After main() completes, update the Excel file
+    update_excel_with_results('results.json', 'New folder/araki.xlsx') 
