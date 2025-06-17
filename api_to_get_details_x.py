@@ -357,23 +357,44 @@ def update_excel_with_results(json_path, excel_path):
         if product_info.get('検索条件'):
             ws[f'D{current_row}'] = product_info['検索条件']
             
-        # Update price and tax fields
-        if product_info.get('FA売価(税込)'):
-            ws[f'H{current_row}'] = product_info['FA売価(税込)']
+        # Add 在庫 status in column F
+        if product_info.get('在庫'):
+            ws[f'F{current_row}'] = product_info['在庫']
             
-        # Update URLs for each shop
-        shop_column_mapping = {
-            'waste': 'R',           # e-life＆work shop
-            'kougushop': 'W',       # 工具ショップ
-            'kouei-sangyou': 'AB',  # 晃栄産業　楽天市場店
-            'dear-worker': 'AG'     # Dear worker ディアワーカー
+        # # Update price in column H
+        # if product_info.get('FA売価(税込)'):
+        #     ws[f'H{current_row}'] = product_info['FA売価(税込)']
+            
+        # Shop mappings for URLs and prices
+        shop_mappings = {
+            'waste': {          # e-life＆work shop
+                'url_col': 'R',
+                'price_col': 'N'
+            },
+            'kougushop': {      # 工具ショップ
+                'url_col': 'W',
+                'price_col': 'S'
+            },
+            'kouei-sangyou': {  # 晃栄産業　楽天市場店
+                'url_col': 'AB',
+                'price_col': 'X'
+            },
+            'dear-worker': {    # Dear worker ディアワーカー
+                'url_col': 'AG',
+                'price_col': 'AC'
+            }
         }
         
-        for shop_code, column in shop_column_mapping.items():
+        # Update URLs and prices for each shop
+        for shop_code, columns in shop_mappings.items():
             if shop_code in shop_info:
                 shop_data = shop_info[shop_code]
+                # Update URL
                 if 'URL' in shop_data:
-                    ws[f'{column}{current_row}'] = shop_data['URL']
+                    ws[f'{columns["url_col"]}{current_row}'] = shop_data['URL']
+                # Update price
+                if '価格' in shop_data:
+                    ws[f'{columns["price_col"]}{current_row}'] = shop_data['価格']
         
         current_row += 1
     
