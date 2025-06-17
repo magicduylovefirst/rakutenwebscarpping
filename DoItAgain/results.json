@@ -1,0 +1,120 @@
+{
+  "items": [
+    {
+      "original_sku": "asc-1271a029-025-250",
+      "search_code_used": "1271a029-025",
+      "product_info": {
+        "商品管理番号": "10037261",
+        "商品名": "☆アシックス/ASICS 1271A029.025　ウィンジョブ　CP209　BOA　ファントム×シルバー　ローカット　(22.5cm〜30.0cm)　安全靴　作業靴　セーフティシューズ　ワーキングシューズ",
+        "検索条件": "asc-1271a029-025-250",
+        "検索除外": "-",
+        "在庫": "○",
+        "定価": "-",
+        "仕入金額": "-",
+        "平均単価": "-",
+        "FA売価(税抜)": 12649,
+        "粗利": "-",
+        "RT後の利益": "-",
+        "FA売価(税込)": 13915
+      },
+      "shop_info": {
+        "kougushop": {
+          "shop_name": "工具ショップ",
+          "shop_code": "kougushop",
+          "価格": 13915,
+          "ポイント": 0,
+          "クーポン": 0,
+          "在庫状況": "在庫あり",
+          "URL": "https://item.rakuten.co.jp/kougushop/1271a029-025/?rafcid=wsc_i_is_1085274442429696242"
+        }
+      }
+    },
+    {
+      "original_sku": "asc-1271a029-025-260",
+      "search_code_used": "fcp209",
+      "product_info": {
+        "商品管理番号": "10435784",
+        "商品名": "アシックス 安全靴 限定カラー ローカット cp209 CP209 FCP209 boa ウィンジョブ BOA安全靴 23.0〜30.0cm 1271A029 asics安全靴 限定色 ユニセックス ダイヤル式 ダイヤル ワイヤー おしゃれ 人気 メッシュ ワーキングシューズ セーフティシューズ asics 人気",
+        "検索条件": "asc-1271a029-025-260",
+        "検索除外": "-",
+        "在庫": "○",
+        "定価": "-",
+        "仕入金額": "-",
+        "平均単価": "-",
+        "FA売価(税抜)": 11799,
+        "粗利": "-",
+        "RT後の利益": "-",
+        "FA売価(税込)": 12980
+      },
+      "shop_info": {
+        "kouei-sangyou": {
+          "shop_name": "晃栄産業",
+          "shop_code": "kouei-sangyou",
+          "価格": 12980,
+          "ポイント": 0,
+          "クーポン": 0,
+          "在庫状況": "在庫あり",
+          "URL": "https://item.rakuten.co.jp/kouei-sangyou/fcp209/?rafcid=wsc_i_is_1085274442429696242"
+        }
+      }
+    },
+    {
+      "original_sku": "asc-1271a029-025-260",
+      "search_code_used": "1271a029",
+      "product_info": {
+        "商品管理番号": "10000595",
+        "商品名": "＼数量限定セール／アシックス 安全靴 ローカット CP209 boa ウィンジョブ BOA安全靴 1271A029 asics安全靴 ユニセックス ダイヤル式 ダイヤル ワイヤー メッシュ ワーキングシューズ セーフティシューズ",
+        "検索条件": "asc-1271a029-025-260",
+        "検索除外": "-",
+        "在庫": "○",
+        "定価": "-",
+        "仕入金額": "-",
+        "平均単価": "-",
+        "FA売価(税抜)": 12499,
+        "粗利": "-",
+        "RT後の利益": "-",
+        "FA売価(税込)": 13750
+      },
+      "shop_info": {
+        "waste": {
+          "shop_name": "e-life＆work shop",
+          "shop_code": "waste",
+          "価格": 13750,
+          "ポイント": 0,
+          "クーポン": 0,
+          "在庫状況": "在庫あり",
+          "URL": "https://item.rakuten.co.jp/waste/cp209/?rafcid=wsc_i_is_1085274442429696242"
+        }
+      }
+    }
+  ],
+  "shops_searched": {
+    "waste": {
+      "name": "e-life＆work shop",
+      "base_url": "https://item.rakuten.co.jp/waste/",
+      "description": "Main shop for safety equipment and work gear"
+    },
+    "kougushop": {
+      "name": "工具ショップ",
+      "base_url": "https://item.rakuten.co.jp/kougushop/",
+      "description": "Specialized in tools and safety equipment"
+    },
+    "kouei-sangyou": {
+      "name": "晃栄産業",
+      "base_url": "https://item.rakuten.co.jp/kouei-sangyou/",
+      "description": "Industrial safety equipment supplier"
+    },
+    "dear-worker": {
+      "name": "dear-worker",
+      "base_url": "https://item.rakuten.co.jp/dear-worker/",
+      "description": "Worker safety equipment specialist"
+    }
+  },
+  "metadata": {
+    "total_time_seconds": 0.45,
+    "average_time_per_sku": 0.15,
+    "total_skus_processed": 3,
+    "total_items_found": 3,
+    "start_time": "2025-06-18 00:11:29"
+  }
+}
