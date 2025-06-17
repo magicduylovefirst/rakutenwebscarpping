@@ -2,43 +2,43 @@ import requests
 import json
 from urllib.parse import urlparse
 import os
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+import pandas as pd
 import time
 
 # Constants
-URL = "https://item.rakuten.co.jp/waste/cp209/?l-id=shoptop_widget_in_shop_ranking&s-id=shoptop_in_shop_ranking"
 API_ENDPOINT = 'https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601'
+APP_ID = '1085274442429696242'
+AFFILIATE_ID = '494cbb7b.da2d8105.494cbb7c.3832fe1e'
 
-def parse_url(url):
-    """Parse Rakuten item URL to get shop code and item code"""
-    print(f"\nParsing URL: {url}")
-    parsed = urlparse(url)
-    print(f"Parsed components: {parsed}")
-    path_parts = [part for part in parsed.path.split('/') if part]
-    print(f"Path parts: {path_parts}")
-    if len(path_parts) >= 2:
-        return path_parts[0], path_parts[1]
-    return None, None
+def read_skus_from_excel(excel_path='araki.xlsx'):
+    """Read SKUs from Excel file"""
+    engines = ['openpyxl', 'xlrd', 'odf']
+    for engine in engines:
+        try:
+            print(f"Trying with {engine} engine...")
+            df = pd.read_excel(excel_path, engine=engine)
+            # Get SKUs from column B (index 1)
+            skus = df.iloc[:, 1].dropna().astype(str).tolist()
+            valid_skus = [(idx + 2, sku) for idx, sku in enumerate(skus) if sku.strip()]
+            print(f"Found {len(valid_skus)} SKUs in Excel")
+            return valid_skus, df
+        except Exception as e:
+            print(f"Error with {engine} engine: {e}")
+            continue
+    return [], None
 
-def fetch_item_details(shop_code, item_code, app_id):
+def fetch_item_details(item_code):
     """Fetch item details using Rakuten Ichiba Item Search API"""
     params = {
-        'applicationId': app_id,
+        'applicationId': APP_ID,
+        'affiliateId': AFFILIATE_ID,
         'keyword': item_code,
-        'shopCode': shop_code,
         'hits': 1,
         'format': 'json'
     }
     
     try:
-        print(f"\nFetching data from: {API_ENDPOINT}")
-        print(f"Parameters: {params}")
+        print(f"\nFetching data for SKU: {item_code}")
         response = requests.get(API_ENDPOINT, params=params)
         response.raise_for_status()
         return response.json()
@@ -48,132 +48,52 @@ def fetch_item_details(shop_code, item_code, app_id):
             print(f"Response text: {e.response.text}")
         return None
 
-def fetch_variations(url):
-    """Fetch size variations using Selenium"""
-    chrome_options = Options()
-    chrome_options.add_argument('--headless')
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--window-size=1920,1080')
-    chrome_options.add_argument('--ignore-certificate-errors')
-    chrome_options.add_argument('--allow-running-insecure-content')
-    
+def update_excel(df, updates, excel_path='araki.xlsx'):
+    """Update Excel file with new data"""
     try:
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.get(url)
+        # Apply updates to dataframe
+        for row_idx, item_name, price in updates:
+            df.iloc[row_idx-2, 2] = item_name  # Column C (index 2)
+            df.iloc[row_idx-2, 9] = price      # Column J (index 9)
         
-        # Wait for the page to load
-        time.sleep(5)
-        
-        # Try to find the size selector
-        try:
-            # Try different selectors
-            selectors = [
-                (By.NAME, "size"),
-                (By.CSS_SELECTOR, "select[name='size']"),
-                (By.CSS_SELECTOR, "select.inventory_choice_name"),
-                (By.XPATH, "//select[contains(@name, 'size')]"),
-                (By.XPATH, "//select[contains(@class, 'inventory_choice_name')]")
-            ]
-            
-            size_select = None
-            for selector_type, selector_value in selectors:
-                try:
-                    size_select = WebDriverWait(driver, 2).until(
-                        EC.presence_of_element_located((selector_type, selector_value))
-                    )
-                    if size_select:
-                        break
-                except:
-                    continue
-            
-            if size_select:
-                options = size_select.find_elements(By.TAG_NAME, "option")
-                sizes = []
-                for option in options:
-                    size = option.text.strip()
-                    if size and size != '未選択':
-                        sizes.append(size)
-                return sorted(sizes)
-            
-            # If no size selector found, try looking in the page source
-            page_source = driver.page_source
-            with open('page_source.html', 'w', encoding='utf-8') as f:
-                f.write(page_source)
-            print("\nSaved page source to page_source.html")
-            
-            # Look for size patterns in the source
-            import re
-            patterns = [
-                r'data-size="(2[5-8]\.[05])"',
-                r'value="(2[5-8]\.[05])"',
-                r'サイズ：(2[5-8]\.[05])',
-                r'size=(2[5-8]\.[05])',
-                r'size">(2[5-8]\.[05])<'
-            ]
-            
-            all_matches = []
-            for pattern in patterns:
-                matches = re.findall(pattern, page_source)
-                all_matches.extend(matches)
-            
-            if all_matches:
-                return sorted(set(all_matches))
-            
-            return []
-            
-        except Exception as e:
-            print(f"Error finding size selector: {e}")
-            return []
-            
+        # Save updated dataframe to Excel
+        df.to_excel(excel_path, index=False)
+        print(f"\nSuccessfully updated Excel file: {excel_path}")
     except Exception as e:
-        print(f"Error setting up Selenium: {e}")
-        return []
-    finally:
-        if 'driver' in locals():
-            driver.quit()
+        print(f"Error updating Excel file: {e}")
 
 def main():
-    # Get Application ID from environment variable
-    app_id = os.environ.get('RAKUTEN_APP_ID')
-    if not app_id:
-        print("Error: RAKUTEN_APP_ID environment variable not set")
+    # Read SKUs from Excel
+    skus, df = read_skus_from_excel()
+    if not skus or df is None:
+        print("No SKUs found in Excel file")
         return
+    
+    updates = []
+    # Process each SKU
+    for row, sku in skus:
+        # Fetch item data
+        data = fetch_item_details(sku)
+        if not data or 'Items' not in data or not data['Items']:
+            print(f"No data found for SKU: {sku}")
+            continue
+            
+        item = data['Items'][0]['Item']
         
-    # Parse URL and get item details
-    shop_code, item_code = parse_url(URL)
-    if not shop_code or not item_code:
-        print(f"Could not parse Rakuten URL: {URL}")
-        return
-    
-    print(f"\nShop Code: {shop_code}")
-    print(f"Item Code: {item_code}")
-    
-    # Fetch item data
-    data = fetch_item_details(shop_code, item_code, app_id)
-    if not data or 'Items' not in data or not data['Items']:
-        print("No item data found")
-        return
+        # Store update
+        updates.append((
+            row,
+            item.get('itemName', 'N/A'),
+            item.get('itemPrice', 'N/A')
+        ))
+        print(f"Got data for row {row}: {item.get('itemName', 'N/A')}, Price: {item.get('itemPrice', 'N/A')}")
         
-    item = data['Items'][0]['Item']
+        # Add delay to avoid API rate limits
+        time.sleep(1)
     
-    print("\n=== Item Information ===")
-    print(f"Name: {item.get('itemName', 'N/A')}")
-    print(f"Price: ¥{item.get('itemPrice', 'N/A'):,}")
-    
-    # Get variations from web scraping
-    print("\n=== Size Variations ===")
-    variations = fetch_variations(URL)
-    
-    if variations:
-        for size in variations:
-            print(f"Size: {size}")
-            variation_url = f"https://item.rakuten.co.jp/{shop_code}/{item_code}/?size={size}"
-            print(f"URL: {variation_url}\n")
-    else:
-        print("No size variations found")
+    # Update Excel file with all changes at once
+    if updates:
+        update_excel(df, updates)
 
 if __name__ == "__main__":
-    main() 
+    main()
